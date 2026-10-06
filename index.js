@@ -8,7 +8,8 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  ActivityType
 } from "discord.js";
 
 // =========================================================
@@ -695,6 +696,14 @@ client.once(
 
     console.log(
       `Logged in as ${readyClient.user.tag}`
+    );
+
+    readyClient.user.setActivity(
+      "twitch.tv/sgooob",
+      {
+        type: ActivityType.Streaming,
+        url: "https://www.twitch.tv/sgooob"
+      }
     );
 
     await registerCommands();
