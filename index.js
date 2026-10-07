@@ -594,6 +594,13 @@ app.post(
 // COMMANDS
 // =========================================================
 
+const commandsCommand =
+  new SlashCommandBuilder()
+    .setName("commands")
+    .setDescription(
+      "Zobrazí všetky príkazy SGooBotu."
+    );
+
 const pmRoleCommand =
   new SlashCommandBuilder()
     .setName("pm-role")
@@ -824,6 +831,7 @@ const removeAdminCommand =
 // =========================================================
 
 const commands = [
+  commandsCommand,
   pmRoleCommand,
   balanceCommand,
   flipCommand,
@@ -1776,6 +1784,42 @@ async function handleRemoveAdmin(interaction) {
   );
 }
 // =========================================================
+// COMMANDS LIST
+// =========================================================
+
+async function handleCommands(interaction) {
+  const message = [
+    "🤖 **SGooBot – Príkazy**",
+    "",
+    "👤 **Pre všetkých:**",
+    "`/commands` — Zobrazí tento zoznam",
+    "`/balance` — Zobrazí tvoje body",
+    "`/flip <suma>` — 50/50 o virtuálne body",
+    "`/daily` — Denný bonus",
+    "`/leaderboard` — TOP 10 hráčov",
+    "",
+    "🛡️ **Bot Admin:**",
+    "`/addpoints <user> <suma>` — Pridá body",
+    "`/removepoints <user> <suma>` — Odoberie body",
+    "`/setpoints <user> <suma>` — Nastaví body",
+    "`/resetpoints <user>` — Vynuluje body",
+    "`/blacklist <user>` — Blacklist",
+    "`/unblacklist <user>` — Zruší blacklist",
+    "",
+    "👑 **Owner:**",
+    "`/addadmin <user>` — Pridá SGooBot admina",
+    "`/removeadmin <user>` — Odoberie SGooBot admina",
+    "",
+    "📨 **Discord Admin:**",
+    "`/pm-role <role> <sprava>` — Pošle PM celej role"
+  ].join("\n");
+
+  return interaction.reply({
+    content: message,
+    ephemeral: true
+  });
+}
+// =========================================================
 // INTERACTION HANDLER
 // =========================================================
 
@@ -1795,6 +1839,11 @@ client.on(
       ) {
         case "pm-role":
           return handlePmRole(
+            interaction
+          );
+
+        case "commands":
+          return handleCommands(
             interaction
           );
 
