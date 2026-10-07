@@ -10,6 +10,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.57.0",
     "discord.js": "^14.26.0",
     "express": "^5.1.0"
   }
