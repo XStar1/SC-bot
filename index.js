@@ -10,7 +10,8 @@ import {
   Routes,
   SlashCommandBuilder,
   EmbedBuilder,
-  ActivityType
+  ActivityType,
+  ChannelType
 } from "discord.js";
 
 // =========================================================
@@ -68,9 +69,57 @@ const port = Number(
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildPresences
   ]
 });
+
+// =========================================================
+// CENTRAL DISCORD LOGGING
+// Set LOG_CHANNEL_ID in Render to the ID of #sgoobot-logs.
+// =========================================================
+
+async function auditLog(title, description, color = 0x5865F2) {
+  const safeDescription = String(description || "Bez detailov").slice(0, 4000);
+  console.log(`[AUDIT] ${title} | ${safeDescription}`);
+
+  if (!process.env.LOG_CHANNEL_ID || !client.isReady()) return;
+
+  try {
+    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
+    if (!channel?.isTextBased() || typeof channel.send !== "function") return;
+
+    const embed = new EmbedBuilder()
+      .setTitle(String(title).slice(0, 256))
+      .setDescription(safeDescription)
+      .setColor(color)
+      .setTimestamp();
+
+    await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  } catch (error) {
+    console.error("Audit log sa nepodarilo odoslať:", error?.code || error?.message || error);
+  }
+}
+
+function isDiscordAdministrator(interaction) {
+  return Boolean(interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator));
+}
+
+async function requireDiscordAdministrator(interaction) {
+  if (isDiscordAdministrator(interaction)) return true;
+  await auditLog(
+    "⚠️ Neoprávnený pokus o príkaz",
+    `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}\nServer: ${interaction.guild?.name || "DM"}`,
+    0xED4245
+  );
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp({ content: "❌ Tento príkaz môže používať iba Discord administrátor.", ephemeral: true }).catch(() => {});
+  } else {
+    await interaction.reply({ content: "❌ Tento príkaz môže používať iba Discord administrátor.", ephemeral: true }).catch(() => {});
+  }
+  return false;
+}
 
 // =========================================================
 // SECURITY
@@ -99,6 +148,12 @@ function authorized(req, res) {
       process.env.WEBHOOK_SECRET
     )
   ) {
+    console.warn(`Unauthorized API request | ${req.method} ${req.path}`);
+    void auditLog(
+      "⚠️ Neoprávnená API požiadavka",
+      `Metóda: ${req.method}\nEndpoint: ${req.path}`,
+      0xED4245
+    );
     res.status(401).json({
       error: "Unauthorized"
     });
@@ -157,6 +212,7 @@ async function getUser(discordId, username = "Unknown") {
       .single();
 
   if (insertError) {
+    // Race condition protection: try reading again.
     const { data: existing } = await supabase
       .from("users")
       .select("*")
@@ -198,7 +254,15 @@ async function isBotAdmin(discordId) {
 }
 
 async function requireEconomyAdmin(interaction) {
-  return isBotAdmin(interaction.user.id);
+  const allowed = await isBotAdmin(interaction.user.id);
+  if (!allowed) {
+    await auditLog(
+      "⚠️ Neoprávnený economy príkaz",
+      `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}`,
+      0xED4245
+    );
+  }
+  return allowed;
 }
 
 async function logTransaction(
@@ -237,7 +301,6 @@ async function setPoints(
   );
 
   const oldPoints = Number(user.points || 0);
-
   const safePoints = Math.max(
     0,
     Math.floor(Number(newPoints))
@@ -259,7 +322,6 @@ async function setPoints(
       "Supabase setPoints error:",
       error
     );
-
     throw new Error("Database error");
   }
 
@@ -462,6 +524,7 @@ app.post(
       console.log(
         `PRIHLÁŠKA ODOSLANÁ | ${message.id}`
       );
+      await auditLog("Nová náborová prihláška", `Správa: ${message.id}\nKanál: ${channel.id}`, 0x57F287);
 
       return res.status(200).json({
         ok: true,
@@ -560,6 +623,7 @@ app.post(
       console.log(
         `ROLE ASSIGNED | ${discordId}`
       );
+      await auditLog("Náborová rola pridelená", `Používateľ ID: ${discordId}\nRola: ${role.name} (${role.id})`, 0x57F287);
 
       return res.status(200).json({
         ok: true,
@@ -590,16 +654,60 @@ app.post(
     }
   }
 );
+
 // =========================================================
 // COMMANDS
 // =========================================================
 
-const commandsCommand =
-  new SlashCommandBuilder()
-    .setName("commands")
-    .setDescription(
-      "Zobrazí všetky príkazy SGooBotu."
-    );
+const commandsCommand = new SlashCommandBuilder()
+  .setName("commands")
+  .setDescription("Zobrazí všetky príkazy SGooBotu.");
+
+const addRoleCommand = new SlashCommandBuilder()
+  .setName("addrole").setDescription("Pridá používateľovi rolu.")
+  .addUserOption(o => o.setName("user").setDescription("Používateľ").setRequired(true))
+  .addRoleOption(o => o.setName("role").setDescription("Rola na pridanie").setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const removeRoleCommand = new SlashCommandBuilder()
+  .setName("removerole").setDescription("Odoberie používateľovi rolu.")
+  .addUserOption(o => o.setName("user").setDescription("Používateľ").setRequired(true))
+  .addRoleOption(o => o.setName("role").setDescription("Rola na odobratie").setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const moveCommand = new SlashCommandBuilder()
+  .setName("move").setDescription("Presunie používateľa do hlasového kanála.")
+  .addUserOption(o => o.setName("user").setDescription("Používateľ na presunutie").setRequired(true))
+  .addChannelOption(o => o.setName("to").setDescription("Cieľový hlasový kanál").addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(true))
+  .addChannelOption(o => o.setName("from").setDescription("Odkiaľ ho presunúť (voliteľné)").addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice).setRequired(false))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const clearCommand = new SlashCommandBuilder()
+  .setName("clear").setDescription("Vymaže posledné správy v tomto kanáli (1–100).")
+  .addIntegerOption(o => o.setName("amount").setDescription("Počet správ, 1 až 100").setMinValue(1).setMaxValue(100).setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const slowmodeCommand = new SlashCommandBuilder()
+  .setName("slowmode").setDescription("Nastaví pomalý režim kanála; 0 ho vypne.")
+  .addIntegerOption(o => o.setName("seconds").setDescription("Sekundy: 0 až 21600").setMinValue(0).setMaxValue(21600).setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const roleInfoCommand = new SlashCommandBuilder()
+  .setName("roleinfo").setDescription("Zobrazí informácie o role.")
+  .addRoleOption(o => o.setName("role").setDescription("Rola na kontrolu").setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const userInfoCommand = new SlashCommandBuilder()
+  .setName("userinfo").setDescription("Zobrazí informácie o používateľovi na serveri.")
+  .addUserOption(o => o.setName("user").setDescription("Používateľ").setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
+
+const announceCommand = new SlashCommandBuilder()
+  .setName("announce").setDescription("Odošle oznámenie vo forme embedu.")
+  .addChannelOption(o => o.setName("channel").setDescription("Kanál oznámenia").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+  .addStringOption(o => o.setName("title").setDescription("Nadpis oznámenia").setMaxLength(256).setRequired(true))
+  .addStringOption(o => o.setName("text").setDescription("Text oznámenia").setMaxLength(4000).setRequired(true))
+  .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator);
 
 const pmRoleCommand =
   new SlashCommandBuilder()
@@ -832,6 +940,14 @@ const removeAdminCommand =
 
 const commands = [
   commandsCommand,
+  addRoleCommand,
+  removeRoleCommand,
+  moveCommand,
+  clearCommand,
+  slowmodeCommand,
+  roleInfoCommand,
+  userInfoCommand,
+  announceCommand,
   pmRoleCommand,
   balanceCommand,
   flipCommand,
@@ -1291,6 +1407,7 @@ async function handleLeaderboard(interaction) {
       lines.join("\n")
   });
 }
+
 // =========================================================
 // ADMIN: ADD POINTS
 // =========================================================
@@ -1644,6 +1761,11 @@ async function handleAddAdmin(interaction) {
   if (
     interaction.user.id !== OWNER_ID
   ) {
+    await auditLog(
+      "⚠️ Neoprávnený owner príkaz",
+      `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}`,
+      0xED4245
+    );
     return interaction.reply({
       content:
         "❌ Tento príkaz môže používať iba owner SGooBotu.",
@@ -1734,6 +1856,11 @@ async function handleRemoveAdmin(interaction) {
   if (
     interaction.user.id !== OWNER_ID
   ) {
+    await auditLog(
+      "⚠️ Neoprávnený owner príkaz",
+      `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}`,
+      0xED4245
+    );
     return interaction.reply({
       content:
         "❌ Tento príkaz môže používať iba owner SGooBotu.",
@@ -1783,159 +1910,238 @@ async function handleRemoveAdmin(interaction) {
     `✅ <@${target.id}> bol odobraný zo **SGooBot adminov**.`
   );
 }
+
 // =========================================================
-// COMMANDS LIST
+// ADMIN COMMAND HELPERS + HANDLERS
 // =========================================================
+
+async function botHasPermission(interaction, permission) {
+  const me = interaction.guild?.members.me;
+  return Boolean(me?.permissions.has(permission));
+}
+
+async function handleAddRole(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const target = interaction.options.getUser("user", true);
+  const role = interaction.options.getRole("role", true);
+  const guild = interaction.guild;
+  if (!guild) return interaction.reply({ content: "Použi tento príkaz na serveri.", ephemeral: true });
+  if (role.managed || role.position >= guild.members.me.roles.highest.position) {
+    return interaction.reply({ content: "❌ Túto rolu bot nemôže spravovať. Skontroluj hierarchiu rolí a integrácie.", ephemeral: true });
+  }
+  if (!(await botHasPermission(interaction, PermissionsBitField.Flags.ManageRoles))) {
+    return interaction.reply({ content: "❌ Bot potrebuje oprávnenie Manage Roles.", ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const member = await guild.members.fetch(target.id);
+    await member.roles.add(role, `Príkaz /addrole od ${interaction.user.tag}`);
+    await interaction.editReply(`✅ Používateľ <@${target.id}> dostal rolu ${role}.`);
+    await auditLog("Rola pridaná", `Admin: ${interaction.user.tag} (${interaction.user.id})\nPoužívateľ: ${target.tag} (${target.id})\nRola: ${role.name} (${role.id})`, 0x57F287);
+  } catch (e) { await interaction.editReply("❌ Rolu sa nepodarilo pridať. Skontroluj, či je používateľ na serveri a či má bot oprávnenia."); throw e; }
+}
+
+async function handleRemoveRole(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const target = interaction.options.getUser("user", true);
+  const role = interaction.options.getRole("role", true);
+  const guild = interaction.guild;
+  if (!guild) return interaction.reply({ content: "Použi tento príkaz na serveri.", ephemeral: true });
+  if (role.managed || role.position >= guild.members.me.roles.highest.position) {
+    return interaction.reply({ content: "❌ Túto rolu bot nemôže spravovať. Skontroluj hierarchiu rolí a integrácie.", ephemeral: true });
+  }
+  if (!(await botHasPermission(interaction, PermissionsBitField.Flags.ManageRoles))) {
+    return interaction.reply({ content: "❌ Bot potrebuje oprávnenie Manage Roles.", ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const member = await guild.members.fetch(target.id);
+    await member.roles.remove(role, `Príkaz /removerole od ${interaction.user.tag}`);
+    await interaction.editReply(`✅ Používateľovi <@${target.id}> bola odobratá rola ${role}.`);
+    await auditLog("Rola odobratá", `Admin: ${interaction.user.tag} (${interaction.user.id})\nPoužívateľ: ${target.tag} (${target.id})\nRola: ${role.name} (${role.id})`, 0xFEE75C);
+  } catch (e) { await interaction.editReply("❌ Rolu sa nepodarilo odobrať. Skontroluj, či je používateľ na serveri a či má bot oprávnenia."); throw e; }
+}
+
+async function handleMove(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const user = interaction.options.getUser("user", true);
+  const to = interaction.options.getChannel("to", true);
+  const from = interaction.options.getChannel("from");
+  const guild = interaction.guild;
+  if (!guild) return interaction.reply({ content: "Použi tento príkaz na serveri.", ephemeral: true });
+  if (!(await botHasPermission(interaction, PermissionsBitField.Flags.MoveMembers))) {
+    return interaction.reply({ content: "❌ Bot potrebuje oprávnenie Move Members.", ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const member = await guild.members.fetch(user.id);
+    if (!member.voice.channel) return interaction.editReply("❌ Používateľ momentálne nie je v hlasovom kanáli.");
+    if (from && member.voice.channelId !== from.id) return interaction.editReply(`❌ Používateľ nie je v zadanom zdrojovom kanáli. Aktuálne je v ${member.voice.channel}.`);
+    await member.voice.setChannel(to, `Príkaz /move od ${interaction.user.tag}`);
+    await interaction.editReply(`✅ <@${user.id}> bol presunutý do ${to}.`);
+    await auditLog("Používateľ presunutý", `Admin: ${interaction.user.tag} (${interaction.user.id})\nPoužívateľ: ${user.tag} (${user.id})\nZ: ${from ? from.name : "aktuálny hlasový kanál"}\nDo: ${to.name}`, 0x57F287);
+  } catch (e) { await interaction.editReply("❌ Presun sa nepodaril. Skontroluj hlasové kanály a oprávnenia bota."); throw e; }
+}
+
+async function handleClear(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const amount = interaction.options.getInteger("amount", true);
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || !channel.messages || typeof channel.bulkDelete !== "function") return interaction.reply({ content: "❌ Tento príkaz funguje iba v bežnom textovom kanáli.", ephemeral: true });
+  if (!channel.permissionsFor(interaction.guild.members.me)?.has(PermissionsBitField.Flags.ManageMessages)) return interaction.reply({ content: "❌ Bot potrebuje oprávnenie Manage Messages v tomto kanáli.", ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const deleted = await channel.bulkDelete(amount, true);
+    const skipped = amount - deleted.size;
+    await interaction.editReply(`🧹 Vymazaných správ: **${deleted.size}**.${skipped > 0 ? `\n⚠️ ${skipped} správ sa nevymazalo, pravdepodobne sú staršie ako 14 dní.` : ""}`);
+    await auditLog("Správy vymazané", `Admin: ${interaction.user.tag} (${interaction.user.id})\nKanál: #${channel.name} (${channel.id})\nPožadované: ${amount}\nVymazané: ${deleted.size}`, 0xFEE75C);
+  } catch (e) { await interaction.editReply("❌ Správy sa nepodarilo vymazať. Skontroluj oprávnenia bota."); throw e; }
+}
+
+async function handleSlowmode(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const seconds = interaction.options.getInteger("seconds", true);
+  const channel = interaction.channel;
+  if (!channel?.isTextBased() || typeof channel.setRateLimitPerUser !== "function") return interaction.reply({ content: "❌ Tento kanál nepodporuje slowmode.", ephemeral: true });
+  if (!channel.permissionsFor(interaction.guild.members.me)?.has(PermissionsBitField.Flags.ManageChannels)) return interaction.reply({ content: "❌ Bot potrebuje oprávnenie Manage Channels v tomto kanáli.", ephemeral: true });
+  try {
+    await channel.setRateLimitPerUser(seconds, `Príkaz /slowmode od ${interaction.user.tag}`);
+    await interaction.reply({ content: seconds === 0 ? "✅ Slowmode bol vypnutý." : `✅ Slowmode nastavený na **${seconds} sekúnd**.`, ephemeral: true });
+    await auditLog("Slowmode zmenený", `Admin: ${interaction.user.tag} (${interaction.user.id})\nKanál: #${channel.name} (${channel.id})\nSekundy: ${seconds}`, 0x57F287);
+  } catch (e) { await interaction.reply({ content: "❌ Slowmode sa nepodarilo zmeniť.", ephemeral: true }); throw e; }
+}
+
+async function handleRoleInfo(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const role = interaction.options.getRole("role", true);
+  const guild = interaction.guild;
+  const members = await guild.members.fetch();
+  const count = members.filter(m => m.roles.cache.has(role.id)).size;
+  const embed = new EmbedBuilder().setTitle(`Informácie o role: ${role.name}`).setColor(role.color || 0x5865F2)
+    .addFields(
+      { name: "ID", value: role.id },
+      { name: "Farba", value: role.hexColor, inline: true },
+      { name: "Členovia", value: String(count), inline: true },
+      { name: "Vytvorená", value: `<t:${Math.floor(role.createdTimestamp / 1000)}:F>` },
+      { name: "Pozícia", value: String(role.position), inline: true }
+    ).setTimestamp();
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleUserInfo(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const user = interaction.options.getUser("user", true);
+  const guild = interaction.guild;
+  let member;
+  try { member = await guild.members.fetch(user.id); }
+  catch { return interaction.reply({ content: "❌ Používateľ nie je členom tohto servera.", ephemeral: true }); }
+  const roles = member.roles.cache.filter(r => r.id !== guild.id).sort((a,b) => b.position-a.position).map(r => r.toString());
+  const roleText = roles.length ? roles.join(", ").slice(0, 1000) : "Žiadne";
+  const status = member.presence?.status || "neznámy (Presence Intent môže byť vypnutý alebo používateľ offline)";
+  const embed = new EmbedBuilder().setTitle(`Informácie o používateľovi: ${user.tag}`).setThumbnail(user.displayAvatarURL()).setColor(0x5865F2)
+    .addFields(
+      { name: "ID používateľa", value: user.id },
+      { name: "Prezývka", value: member.nickname || "Žiadna" , inline: true },
+      { name: "Stav", value: status, inline: true },
+      { name: "Účet vytvorený", value: `<t:${Math.floor(user.createdTimestamp/1000)}:F>` },
+      { name: "Vstup na server", value: member.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp/1000)}:F>` : "Neznámy" },
+      { name: `Roly (${roles.length})`, value: roleText }
+    ).setTimestamp();
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleAnnounce(interaction) {
+  if (!(await requireDiscordAdministrator(interaction))) return;
+  const channel = interaction.options.getChannel("channel", true);
+  const title = interaction.options.getString("title", true);
+  const text = interaction.options.getString("text", true);
+  if (!channel.isTextBased() || typeof channel.send !== "function") return interaction.reply({ content: "❌ Vybraný kanál nepodporuje správy.", ephemeral: true });
+  const channelPermissions = channel.permissionsFor(interaction.guild.members.me);
+  if (!channelPermissions?.has([PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.EmbedLinks])) return interaction.reply({ content: "❌ Bot potrebuje oprávnenia Send Messages a Embed Links vo vybranom kanáli.", ephemeral: true });
+  try {
+    const embed = new EmbedBuilder().setTitle(title).setDescription(text).setColor(0x5865F2).setFooter({ text: `Oznámenie od ${interaction.user.tag}` }).setTimestamp();
+    const sent = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    await interaction.reply({ content: `✅ Oznámenie bolo odoslané do ${channel}. [Zobraziť správu](${sent.url})`, ephemeral: true });
+    await auditLog("Oznámenie odoslané", `Admin: ${interaction.user.tag} (${interaction.user.id})\nKanál: ${channel.name} (${channel.id})\nNadpis: ${title}\nSpráva ID: ${sent.id}`, 0x57F287);
+  } catch (e) { if (!interaction.replied) await interaction.reply({ content: "❌ Oznámenie sa nepodarilo odoslať.", ephemeral: true }).catch(() => {}); throw e; }
+}
 
 async function handleCommands(interaction) {
   const message = [
-    "🤖 **SGooBot – Príkazy**",
-    "",
+    "🤖 **SGooBot – Príkazy**", "",
     "👤 **Pre všetkých:**",
-    "`/commands` — Zobrazí tento zoznam",
-    "`/balance` — Zobrazí tvoje body",
-    "`/flip <suma>` — 50/50 o virtuálne body",
-    "`/daily` — Denný bonus",
-    "`/leaderboard` — TOP 10 hráčov",
-    "",
-    "🛡️ **Bot Admin:**",
-    "`/addpoints <user> <suma>` — Pridá body",
-    "`/removepoints <user> <suma>` — Odoberie body",
-    "`/setpoints <user> <suma>` — Nastaví body",
-    "`/resetpoints <user>` — Vynuluje body",
-    "`/blacklist <user>` — Blacklist",
-    "`/unblacklist <user>` — Zruší blacklist",
-    "",
-    "👑 **Owner:**",
-    "`/addadmin <user>` — Pridá SGooBot admina",
-    "`/removeadmin <user>` — Odoberie SGooBot admina",
-    "",
-    "📨 **Discord Admin:**",
-    "`/pm-role <role> <sprava>` — Pošle PM celej role"
+    "`/commands` — Zoznam príkazov", "`/balance` — Stav bodov", "`/flip <suma>` — 50/50 o virtuálne body", "`/daily` — Denný bonus", "`/leaderboard` — TOP 10 hráčov", "",
+    "🛡️ **SGooBot economy admin:**",
+    "`/addpoints <user> <suma>` — Pridá body", "`/removepoints <user> <suma>` — Odoberie body", "`/setpoints <user> <suma>` — Nastaví body", "`/resetpoints <user>` — Vynuluje body", "`/blacklist <user>` / `/unblacklist <user>` — Economy blacklist", "",
+    "👑 **Owner:**", "`/addadmin <user>` / `/removeadmin <user>` — Správa SGooBot adminov", "",
+    "🛡️ **Discord administrátor:**", "`/pm-role <role> <sprava>` — Hromadná PM", "`/addrole <user> <role>` / `/removerole <user> <role>` — Správa rolí", "`/move <user> <to> [from]` — Presun vo voice", "`/clear <amount>` — Vymazanie správ", "`/slowmode <seconds>` — Pomalý režim (0 = vypnúť)", "`/roleinfo <role>` — Informácie o role", "`/userinfo <user>` — Informácie o používateľovi", "`/announce <channel> <title> <text>` — Oznámenie do kanála"
   ].join("\n");
-
-  return interaction.reply({
-    content: message,
-    ephemeral: true
-  });
+  return interaction.reply({ content: message, ephemeral: true });
 }
+
 // =========================================================
-// INTERACTION HANDLER
+// INTERACTION HANDLER + CENTRAL COMMAND AUDIT
 // =========================================================
 
-client.on(
-  "interactionCreate",
-  async interaction => {
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
 
-    if (
-      !interaction.isChatInputCommand()
-    ) {
-      return;
-    }
+  const commandHandlers = {
+    "commands": handleCommands,
+    "pm-role": handlePmRole,
+    "balance": handleBalance,
+    "flip": handleFlip,
+    "daily": handleDaily,
+    "leaderboard": handleLeaderboard,
+    "addpoints": handleAddPoints,
+    "removepoints": handleRemovePoints,
+    "setpoints": handleSetPoints,
+    "resetpoints": handleResetPoints,
+    "blacklist": handleBlacklist,
+    "unblacklist": handleUnblacklist,
+    "addadmin": handleAddAdmin,
+    "removeadmin": handleRemoveAdmin,
+    "addrole": handleAddRole,
+    "removerole": handleRemoveRole,
+    "move": handleMove,
+    "clear": handleClear,
+    "slowmode": handleSlowmode,
+    "roleinfo": handleRoleInfo,
+    "userinfo": handleUserInfo,
+    "announce": handleAnnounce
+  };
 
-    try {
-      switch (
-        interaction.commandName
-      ) {
-        case "pm-role":
-          return handlePmRole(
-            interaction
-          );
+  const handler = commandHandlers[interaction.commandName];
+  if (!handler) return;
 
-        case "commands":
-          return handleCommands(
-            interaction
-          );
+  await auditLog(
+    "Príkaz použitý",
+    `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}\nServer: ${interaction.guild?.name || "DM"} (${interaction.guildId || "bez servera"})\nKanál: ${interaction.channel?.name || "neznámy"}`,
+    0x5865F2
+  );
 
-        case "balance":
-          return handleBalance(
-            interaction
-          );
-
-        case "flip":
-          return handleFlip(
-            interaction
-          );
-
-        case "daily":
-          return handleDaily(
-            interaction
-          );
-
-        case "leaderboard":
-          return handleLeaderboard(
-            interaction
-          );
-
-        case "addpoints":
-          return handleAddPoints(
-            interaction
-          );
-
-        case "removepoints":
-          return handleRemovePoints(
-            interaction
-          );
-
-        case "setpoints":
-          return handleSetPoints(
-            interaction
-          );
-
-        case "resetpoints":
-          return handleResetPoints(
-            interaction
-          );
-
-        case "blacklist":
-          return handleBlacklist(
-            interaction
-          );
-
-        case "unblacklist":
-          return handleUnblacklist(
-            interaction
-          );
-
-        case "addadmin":
-          return handleAddAdmin(
-            interaction
-          );
-
-        case "removeadmin":
-          return handleRemoveAdmin(
-            interaction
-          );
-
-        default:
-          return;
-      }
-
-    } catch (error) {
-      console.error(
-        `Command ${interaction.commandName} failed:`,
-        error
-      );
-
-      const message =
-        "❌ Pri vykonávaní príkazu nastala chyba.";
-
-      if (
-        interaction.replied ||
-        interaction.deferred
-      ) {
-        await interaction.editReply(
-          message
-        ).catch(() => {});
-      } else {
-        await interaction.reply({
-          content: message,
-          ephemeral: true
-        }).catch(() => {});
-      }
+  try {
+    await handler(interaction);
+    await auditLog(
+      "Príkaz dokončený",
+      `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}\nStav: handler dokončený bez neošetrenej chyby`,
+      0x57F287
+    );
+  } catch (error) {
+    console.error(`Command ${interaction.commandName} failed:`, error);
+    await auditLog(
+      "❌ Chyba príkazu",
+      `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}\nChyba: ${error?.code || error?.message || "neznáma chyba"}`,
+      0xED4245
+    );
+    const message = "❌ Pri vykonávaní príkazu nastala chyba.";
+    if (interaction.replied || interaction.deferred) {
+      await interaction.editReply({ content: message }).catch(() => {});
+    } else {
+      await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
     }
   }
-);
+});
 
 // =========================================================
 // BOT READY
