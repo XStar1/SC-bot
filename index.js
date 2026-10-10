@@ -922,6 +922,10 @@ const customCommand = new SlashCommandBuilder()
       )
   );
 
+const customTestCommand = new SlashCommandBuilder()
+  .setName("customtest")
+  .setDescription("OWNER ONLY: Test Custom 5v5 bez 10 hráčov");
+
 // =========================================================
 // REGISTER SLASH COMMANDS
 // =========================================================
@@ -949,6 +953,7 @@ const commands = [
   unblacklistCommand,
   addAdminCommand,
   removeAdminCommand,
+  customTestCommand,
   customCommand
 ];
 
@@ -2241,12 +2246,12 @@ function customEmbed(g) {
     .addFields(
       {
         name: "🔵 Blue Team",
-        value: g.blue.map(id => `<@${id}>`).join("\n"),
+        value: g.blue.map(id => `<@${id}>`).join("\n") || "Žiadni hráči",
         inline: true
       },
       {
         name: "🔴 Red Team",
-        value: g.red.map(id => `<@${id}>`).join("\n"),
+        value: g.red.map(id => `<@${id}>`).join("\n") || "Žiadni hráči",
         inline: true
       }
     )
@@ -2313,6 +2318,14 @@ async function handleCustomCreate(interaction) {
     ephemeral: true
   });
 
+  const isTest = interaction.commandName === "customtest";
+
+if (isTest && interaction.user.id !== OWNER_ID) {
+  return interaction.editReply(
+    "❌ /customtest môže používať iba majiteľ SGooBotu."
+  );
+}
+
   if (!interaction.guild) {
     return interaction.editReply(
       "❌ Príkaz funguje iba na serveri."
@@ -2357,11 +2370,13 @@ async function handleCustomCreate(interaction) {
     .filter(member => !member.user.bot)
     .map(member => member.id);
 
-  if (ids.length !== 10) {
-    return interaction.editReply(
-      `❌ V čakacej roomke musí byť presne 10 hráčov. Teraz: ${ids.length}/10.`
-    );
-  }
+ if (isTest ? (ids.length < 1 || ids.length > 10) : ids.length !== 10) {
+  return interaction.editReply(
+    isTest
+      ? `❌ Test vyžaduje 1 až 10 hráčov. Teraz: ${ids.length}.`
+      : `❌ Custom 5v5 vyžaduje presne 10 hráčov. Teraz: ${ids.length}/10.`
+  );
+}
 
   const mixed = customMix(ids);
 
@@ -2371,8 +2386,8 @@ async function handleCustomCreate(interaction) {
     guildId: interaction.guildId,
     waitingId,
     categoryId,
-    blue: mixed.slice(0, 5),
-    red: mixed.slice(5),
+    blue: mixed.slice(0, Math.ceil(mixed.length / 2)),
+    red: mixed.slice(Math.ceil(mixed.length / 2)),
     status: "waiting",
     blueChannel: null,
     redChannel: null,
@@ -2654,8 +2669,16 @@ async function handleCustomComponent(interaction) {
     });
   }
 
-  if (action === "swap") {
-    const menu = new StringSelectMenuBuilder()
+ if (action === "swap") {
+
+  if (game.blue.length === 0 || game.red.length === 0) {
+    return interaction.reply({
+      content: "❌ Na výmenu potrebuješ aspoň jedného hráča v každom tíme.",
+      ephemeral: true
+    });
+  }
+
+  const menu = new StringSelectMenuBuilder()
       .setCustomId(`cg:blue:${id}`)
       .setPlaceholder("Vyber hráča z Blue Teamu")
       .addOptions(
@@ -2735,9 +2758,10 @@ async function handleCustomComponent(interaction) {
         ...game.red
       ]);
 
-      game.blue = ids.slice(0, 5);
-      game.red = ids.slice(5);
+      const half = Math.ceil(ids.length / 2);
 
+        game.blue = ids.slice(0, half);
+        game.red = ids.slice(half);
       await customRefresh(game);
 
       result = "🔀 Tímy zamiešané.";
@@ -2859,6 +2883,7 @@ client.on("interactionCreate", async interaction => {
     slowmode: handleSlowmode,
     roleinfo: handleRoleInfo,
     userinfo: handleUserInfo,
+    customtest: handleCustomCreate,
     announce: handleAnnounce
   };
 
