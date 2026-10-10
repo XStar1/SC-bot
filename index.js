@@ -2208,8 +2208,16 @@ async function handleCommands(interaction) {
 // CUSTOM 5V5
 // =========================================================
 
+// Každá hra sa eviduje podľa guildId:gameId
 const customGames = new Map();
 const customBusy = new Set();
+
+// Ochrana pred súčasným vytváraním hier
+const customCreating = new Set();
+
+function customGameKey(guildId, gameId) {
+  return `${guildId}:${gameId}`;
+}
 
 function customMix(ids) {
   const a = [...ids];
@@ -2223,14 +2231,25 @@ function customMix(ids) {
 }
 
 function customEmbed(g) {
+  const winnerText =
+    g.winner === "blue"
+      ? "\n\n🏆 **BLUE TEAM WINS!**"
+      : g.winner === "red"
+        ? "\n\n🏆 **RED TEAM WINS!**"
+        : "";
+
   return new EmbedBuilder()
     .setTitle("🎮 SGooBot | Custom Game 5v5")
     .setColor(
-      g.status === "playing"
-        ? 0x57F287
-        : g.status === "ended"
-          ? 0x747F8D
-          : 0x5865F2
+      g.winner === "blue"
+        ? 0x3498DB
+        : g.winner === "red"
+          ? 0xED4245
+          : g.status === "playing"
+            ? 0x57F287
+            : g.status === "ended"
+              ? 0x747F8D
+              : 0x5865F2
     )
     .setDescription(
       `**Game ID:** ${g.id}\n` +
@@ -2240,18 +2259,23 @@ function customEmbed(g) {
           ? "🟡 Pripravená"
           : g.status === "playing"
             ? "🟢 Prebieha"
-            : "🔴 Ukončená"
-      }`
+            : "🏁 Ukončená"
+      }` +
+      winnerText
     )
     .addFields(
       {
         name: "🔵 Blue Team",
-        value: g.blue.map(id => `<@${id}>`).join("\n") || "Žiadni hráči",
+        value:
+          g.blue.map(id => `<@${id}>`).join("\n") ||
+          "Žiadni hráči",
         inline: true
       },
       {
         name: "🔴 Red Team",
-        value: g.red.map(id => `<@${id}>`).join("\n") || "Žiadni hráči",
+        value:
+          g.red.map(id => `<@${id}>`).join("\n") ||
+          "Žiadni hráči",
         inline: true
       }
     )
@@ -2278,7 +2302,15 @@ function customRows(g) {
         .setEmoji("🔀")
     );
   }
-
+if (g.status === "playing") {
+  row.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cg:winner:${g.id}`)
+      .setLabel("Víťaz")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("🏆")
+  );
+}
   row.addComponents(
     new ButtonBuilder()
       .setCustomId(`cg:swap:${g.id}`)
@@ -2307,24 +2339,23 @@ async function customRefresh(g) {
 }
 
 async function customAuthorized(interaction, game) {
-  return (
-    interaction.user.id === game.owner ||
-    (await getAdminTier(interaction.user.id)) >= 3
-  );
+  const tier = await getAdminTier(interaction.user.id);
+
+  return tier >= 2;
 }
+
 
 async function handleCustomCreate(interaction) {
-  await interaction.deferReply({
-    ephemeral: true
-  });
+  await interaction.deferReply({ ephemeral: true });
 
   const isTest = interaction.commandName === "customtest";
+  const guildId = interaction.guildId;
 
-if (isTest && interaction.user.id !== OWNER_ID) {
-  return interaction.editReply(
-    "❌ /customtest môže používať iba majiteľ SGooBotu."
-  );
-}
+  if (isTest && interaction.user.id !== OWNER_ID) {
+    return interaction.editReply(
+      "❌ /customtest môže používať iba majiteľ SGooBotu."
+    );
+  }
 
   if (!interaction.guild) {
     return interaction.editReply(
@@ -2332,91 +2363,162 @@ if (isTest && interaction.user.id !== OWNER_ID) {
     );
   }
 
-  if (customGames.has(interaction.guildId)) {
+  if (customCreating.has(guildId)) {
     return interaction.editReply(
-      "❌ Na serveri už je aktívna custom hra."
+      "⏳ Custom hry sa už vytvárajú. Skús to o chvíľu."
     );
   }
 
-  const waitingId = process.env.CUSTOM_WAITING_CHANNEL_ID;
-  const categoryId = process.env.CUSTOM_CATEGORY_ID;
-
-  if (!waitingId || !categoryId) {
-    return interaction.editReply(
-      "❌ Nastav CUSTOM_WAITING_CHANNEL_ID a CUSTOM_CATEGORY_ID na Renderi."
-    );
-  }
-
-  const waiting = await interaction.guild.channels.fetch(
-    waitingId
-  );
-
-  const category = await interaction.guild.channels.fetch(
-    categoryId
-  );
-
-  if (
-    waiting?.type !== ChannelType.GuildVoice ||
-    category?.type !== ChannelType.GuildCategory ||
-    waiting.guildId !== interaction.guildId ||
-    category.guildId !== interaction.guildId
-  ) {
-    return interaction.editReply(
-      "❌ Nesprávne ID čakacej roomky alebo kategórie."
-    );
-  }
-
-  const ids = [...waiting.members.values()]
-    .filter(member => !member.user.bot)
-    .map(member => member.id);
-
- if (isTest ? (ids.length < 1 || ids.length > 10) : ids.length !== 10) {
-  return interaction.editReply(
-    isTest
-      ? `❌ Test vyžaduje 1 až 10 hráčov. Teraz: ${ids.length}.`
-      : `❌ Custom 5v5 vyžaduje presne 10 hráčov. Teraz: ${ids.length}/10.`
-  );
-}
-
-  const mixed = customMix(ids);
-
-  const game = {
-    id: crypto.randomBytes(4).toString("hex"),
-    owner: interaction.user.id,
-    guildId: interaction.guildId,
-    waitingId,
-    categoryId,
-    blue: mixed.slice(0, Math.ceil(mixed.length / 2)),
-    red: mixed.slice(Math.ceil(mixed.length / 2)),
-    status: "waiting",
-    blueChannel: null,
-    redChannel: null,
-    message: null
-  };
-
-  customGames.set(interaction.guildId, game);
+  customCreating.add(guildId);
 
   try {
-    game.message = await interaction.channel.send({
-      embeds: [customEmbed(game)],
-      components: customRows(game),
-      allowedMentions: {
-        parse: []
-      }
-    });
+    const waitingId = process.env.CUSTOM_WAITING_CHANNEL_ID;
+    const categoryId = process.env.CUSTOM_CATEGORY_ID;
 
-    await auditLog(
-      "Custom 5v5 vytvorená",
-      `Game: ${game.id}\nOrganizátor: ${game.owner}`
-    );
+    if (!waitingId || !categoryId) {
+      return interaction.editReply(
+        "❌ Nastav CUSTOM_WAITING_CHANNEL_ID a CUSTOM_CATEGORY_ID."
+      );
+    }
+
+    const waiting = await interaction.guild.channels.fetch(waitingId);
+    const category = await interaction.guild.channels.fetch(categoryId);
+
+    if (
+      waiting?.type !== ChannelType.GuildVoice ||
+      category?.type !== ChannelType.GuildCategory ||
+      waiting.guildId !== guildId ||
+      category.guildId !== guildId
+    ) {
+      return interaction.editReply(
+        "❌ Nesprávne ID čakacej roomky alebo kategórie."
+      );
+    }
+
+    // Hráči už priradení k aktívnym hrám
+    const reserved = new Set();
+
+    for (const game of customGames.values()) {
+      if (game.guildId !== guildId) continue;
+
+      for (const id of [...game.blue, ...game.red]) {
+        reserved.add(id);
+      }
+    }
+
+    // Načítanie aktuálnych hráčov
+    const freshWaiting = await interaction.guild.channels.fetch(waitingId);
+
+    const available = [...freshWaiting.members.values()]
+      .filter(member => !member.user.bot)
+      .map(member => member.id)
+      .filter(id => !reserved.has(id));
+
+    const mixed = customMix(available);
+
+    let groups = [];
+
+    if (isTest) {
+      if (mixed.length < 1) {
+        return interaction.editReply(
+          "❌ Na test potrebuješ aspoň jedného voľného hráča."
+        );
+      }
+
+      groups = [mixed.slice(0, 10)];
+    } else {
+      const count = Math.floor(mixed.length / 10);
+
+      if (count < 1) {
+        return interaction.editReply(
+          `❌ Potrebuješ aspoň 10 voľných hráčov. Teraz: ${mixed.length}/10.`
+        );
+      }
+
+      for (let i = 0; i < count; i++) {
+        groups.push(mixed.slice(i * 10, (i + 1) * 10));
+      }
+    }
+
+    const created = [];
+    const errors = [];
+
+    for (const ids of groups) {
+      const { data: nextGameId, error: gameIdError } =
+        await supabase.rpc("next_custom_game_id");
+
+      if (gameIdError || !nextGameId) {
+        console.error("Custom Game ID:", gameIdError);
+        errors.push("Nepodarilo sa prideliť ďalšie Game ID.");
+        break;
+      }
+
+      const half = Math.ceil(ids.length / 2);
+
+      const game = {
+        id: String(nextGameId),
+        owner: interaction.user.id,
+        guildId,
+        waitingId,
+        categoryId,
+        blue: ids.slice(0, half),
+        red: ids.slice(half),
+        status: "waiting",
+        winner: null,
+        blueChannel: null,
+        redChannel: null,
+        message: null
+      };
+
+      const key = customGameKey(guildId, game.id);
+
+      try {
+        game.message = await interaction.channel.send({
+          embeds: [customEmbed(game)],
+          components: customRows(game),
+          allowedMentions: { parse: [] }
+        });
+
+        customGames.set(key, game);
+        created.push(game.id);
+
+        await auditLog(
+          "Custom 5v5 vytvorená",
+          `Game: ${game.id}\nOrganizátor: ${game.owner}`
+        ).catch(error => {
+          console.error("Custom audit log:", error);
+        });
+
+      } catch (error) {
+        console.error("Custom create:", error);
+        errors.push(`Game ${game.id}: ${error.message}`);
+        break;
+      }
+    }
+
+    const waitingCount = mixed.length -
+      created.reduce((total, id) => {
+        const game = customGames.get(customGameKey(guildId, id));
+        return total + (game?.blue.length || 0) +
+          (game?.red.length || 0);
+      }, 0);
 
     return interaction.editReply(
-      "✅ Custom 5v5 bola vytvorená."
+      `🎮 Vytvorených hier: **${created.length}**\n` +
+      `🆔 Game ID: ${created.join(", ") || "žiadne"}\n` +
+      `👥 Nezaradených hráčov: ${waitingCount}` +
+      (errors.length ? `\n⚠️ ${errors.join("\n")}` : "")
     );
 
   } catch (error) {
-    customGames.delete(interaction.guildId);
-    throw error;
+    console.error("Custom create:", error);
+
+    return interaction.editReply(
+      `❌ Chyba pri vytváraní hier: ${error.message}`
+    );
+
+  } finally {
+    customCreating.delete(guildId);
   }
 }
 
@@ -2455,14 +2557,14 @@ async function customStart(interaction, game) {
 
   try {
     blue = await guild.channels.create({
-      name: `🔵 Blue Team | ${game.id}`,
+      name: `${game.id} | 🔵 Blue Team`,
       type: ChannelType.GuildVoice,
       parent: category.id,
       userLimit: 5
     });
 
     red = await guild.channels.create({
-      name: `🔴 Red Team | ${game.id}`,
+      name: `${game.id} | 🔴 Red Team`,
       type: ChannelType.GuildVoice,
       parent: category.id,
       userLimit: 5
@@ -2587,8 +2689,10 @@ async function customSwap(
   return "✅ Hráči boli vymenení.";
 }
 
+
 async function customEnd(interaction, game) {
   const problems = [];
+  const remainingChannels = [];
 
   for (const id of [
     game.blueChannel,
@@ -2604,9 +2708,7 @@ async function customEnd(interaction, game) {
 
     for (const member of [...channel.members.values()]) {
       try {
-        await member.voice.setChannel(
-          game.waitingId
-        );
+        await member.voice.setChannel(game.waitingId);
       } catch {
         problems.push(member.id);
       }
@@ -2617,28 +2719,51 @@ async function customEnd(interaction, game) {
       .catch(() => null);
 
     if (fresh?.members.size === 0) {
-      await fresh.delete().catch(() => {});
+      try {
+        await fresh.delete();
+      } catch (error) {
+        console.error(
+          "Nepodarilo sa vymazať custom roomku:",
+          error
+        );
+
+        remainingChannels.push(id);
+      }
+    } else if (fresh) {
+      remainingChannels.push(id);
     }
   }
 
-  game.status = "ended";
+game.status = "ended";
 
+try {
   await customRefresh(game);
-
-  customGames.delete(game.guildId);
+} catch (error) {
+  console.error("Nepodarilo sa aktualizovať embed:", error);
+  console.warn("Výsledný embed sa nepodarilo uložiť.");
+} finally {
+  customGames.delete(
+  customGameKey(game.guildId, game.id)
+);
+}
 
   await auditLog(
     "Custom 5v5 ukončená",
-    `Game: ${game.id}\nUkončil: ${
-      interaction.user.id
-    }\nNepresunutí: ${
-      problems.join(", ") || "nikto"
-    }`
+    `Game: ${game.id}\n` +
+    `Ukončil: ${interaction.user.id}\n` +
+    `Víťaz: ${game.winner || "neurčený"}\n` +
+    `Nepresunutí: ${problems.join(", ") || "nikto"}`
   );
 
-  return problems.length
-    ? `⚠️ Hra ukončená, ${problems.length} hráčov nebolo možné vrátiť.`
-    : "✅ Hra ukončená a roomky upratané.";
+  if (problems.length || remainingChannels.length) {
+    return (
+      `⚠️ Hra ukončená. ` +
+      `Nepresunutí hráči: ${problems.length}. ` +
+      `Neodstránené roomky: ${remainingChannels.length}.`
+    );
+  }
+
+  return "✅ Hra ukončená a roomky upratané.";
 }
 
 async function handleCustomComponent(interaction) {
@@ -2649,9 +2774,9 @@ async function handleCustomComponent(interaction) {
     selectedBlue
   ] = interaction.customId.split(":");
 
-  const game = customGames.get(
-    interaction.guildId
-  );
+ const game = customGames.get(
+  customGameKey(interaction.guildId, id)
+);
 
   if (!game || game.id !== id) {
     return interaction.reply({
@@ -2664,11 +2789,38 @@ async function handleCustomComponent(interaction) {
   if (!(await customAuthorized(interaction, game))) {
     return interaction.reply({
       content:
-        "❌ Ovládať môže iba organizátor alebo Tier 3 admin.",
+        "❌ Nemáš oprávnenie to používať.",
+      ephemeral: true
+    });
+  }
+if (action === "winner") {
+  if (game.status !== "playing") {
+    return interaction.reply({
+      content: "❌ Víťaza možno vybrať iba počas hry.",
       ephemeral: true
     });
   }
 
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cg:winblue:${game.id}`)
+      .setLabel("Blue Team")
+      .setEmoji("🔵")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId(`cg:winred:${game.id}`)
+      .setLabel("Red Team")
+      .setEmoji("🔴")
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  return interaction.reply({
+    content: "🏆 Ktorý tím vyhral Custom Game?",
+    components: [row],
+    ephemeral: true
+  });
+}
  if (action === "swap") {
 
   if (game.blue.length === 0 || game.red.length === 0) {
@@ -2733,15 +2885,16 @@ async function handleCustomComponent(interaction) {
   }
 
   await interaction.deferUpdate();
-
-  if (customBusy.has(interaction.guildId)) {
+  
+  const busyKey = customGameKey(interaction.guildId, game.id);
+  if (customBusy.has(busyKey)) {
     return interaction.followUp({
       content: "⏳ Práve prebieha iná akcia.",
       ephemeral: true
     });
   }
 
-  customBusy.add(interaction.guildId);
+  customBusy.add(busyKey);
 
   try {
     let result;
@@ -2786,6 +2939,28 @@ async function handleCustomComponent(interaction) {
         interaction.values[0]
       );
 
+} else if (
+  action === "winblue" ||
+  action === "winred"
+) {
+  if (game.status !== "playing") {
+    throw new Error("Hra už nie je aktívna.");
+  }
+
+  const winner = action === "winblue" ? "blue" : "red";
+
+  game.winner = winner;
+
+  result = await customEnd(interaction, game);
+
+  result =
+    `🏆 ${
+      winner === "blue"
+        ? "BLUE TEAM"
+        : "RED TEAM"
+    } WINS!\n${result}`;
+
+      
     } else if (action === "end") {
       result = await customEnd(
         interaction,
@@ -2816,7 +2991,7 @@ async function handleCustomComponent(interaction) {
     });
 
   } finally {
-    customBusy.delete(interaction.guildId);
+    customBusy.delete(busyKey);
   }
 }
 
