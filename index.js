@@ -76,7 +76,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
-    ...(process.env.ENABLE_PRESENCE_INTENT === "true" ? [GatewayIntentBits.GuildPresences] : [])
+    ...(process.env.ENABLE_PRESENCE_INTENT === "true"
+      ? [GatewayIntentBits.GuildPresences]
+      : [])
   ]
 });
 
@@ -84,15 +86,37 @@ const client = new Client({
 // CENTRAL DISCORD LOGGING
 // =========================================================
 
-async function auditLog(title, description, color = 0x5865F2) {
-  const safeDescription = String(description || "Bez detailov").slice(0, 4000);
-  console.log(`[AUDIT] ${title} | ${safeDescription}`);
+async function auditLog(
+  title,
+  description,
+  color = 0x5865F2
+) {
+  const safeDescription = String(
+    description || "Bez detailov"
+  ).slice(0, 4000);
 
-  if (!process.env.LOG_CHANNEL_ID || !client.isReady()) return;
+  console.log(
+    `[AUDIT] ${title} | ${safeDescription}`
+  );
+
+  if (
+    !process.env.LOG_CHANNEL_ID ||
+    !client.isReady()
+  ) {
+    return;
+  }
 
   try {
-    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
-    if (!channel?.isTextBased() || typeof channel.send !== "function") return;
+    const channel = await client.channels.fetch(
+      process.env.LOG_CHANNEL_ID
+    );
+
+    if (
+      !channel?.isTextBased() ||
+      typeof channel.send !== "function"
+    ) {
+      return;
+    }
 
     const embed = new EmbedBuilder()
       .setTitle(String(title).slice(0, 256))
@@ -100,48 +124,110 @@ async function auditLog(title, description, color = 0x5865F2) {
       .setColor(color)
       .setTimestamp();
 
-    await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    await channel.send({
+      embeds: [embed],
+      allowedMentions: {
+        parse: []
+      }
+    });
+
   } catch (error) {
-    console.error("Audit log sa nepodarilo odoslať:", error?.code || error?.message || error);
+    console.error(
+      "Audit log sa nepodarilo odoslať:",
+      error?.code || error?.message || error
+    );
   }
 }
 
-// Tier hierarchy: 1 = economy, 2 = moderation, 3 = full admin, 4 = owner.
+// =========================================================
+// ADMIN TIER SYSTEM
+// =========================================================
+
+// 1 = economy
+// 2 = moderation
+// 3 = full admin
+// 4 = owner
+
 const COMMAND_TIERS = Object.freeze({
-  addpoints: 1, removepoints: 1, setpoints: 1, resetpoints: 1,
-  move: 2, clear: 2, slowmode: 2, roleinfo: 2, userinfo: 2,
-  addrole: 3, removerole: 3, announce: 3, "pm-role": 3,
-  blacklist: 3, unblacklist: 3,
-  addadmin: 4, removeadmin: 4
+  addpoints: 1,
+  removepoints: 1,
+  setpoints: 1,
+  resetpoints: 1,
+
+  move: 2,
+  clear: 2,
+  slowmode: 2,
+  roleinfo: 2,
+  userinfo: 2,
+
+  addrole: 3,
+  removerole: 3,
+  announce: 3,
+  "pm-role": 3,
+  blacklist: 3,
+  unblacklist: 3,
+
+  addadmin: 4,
+  removeadmin: 4
 });
 
 async function getAdminTier(discordId) {
-  if (discordId === OWNER_ID) return 4;
-  const { data, error } = await supabase.from("bot_admins")
-    .select("tier").eq("discord_id", discordId).maybeSingle();
-  if (error) throw new Error(`Nepodarilo sa overiť tier: ${error.message}`);
+  if (discordId === OWNER_ID) {
+    return 4;
+  }
+
+  const { data, error } = await supabase
+    .from("bot_admins")
+    .select("tier")
+    .eq("discord_id", discordId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Nepodarilo sa overiť tier: ${error.message}`
+    );
+  }
+
   return data ? Number(data.tier) : 0;
 }
 
-async function requireTier(interaction, requiredTier) {
-  const tier = await getAdminTier(interaction.user.id);
-  if (tier >= requiredTier) return true;
+async function requireTier(
+  interaction,
+  requiredTier
+) {
+  const tier = await getAdminTier(
+    interaction.user.id
+  );
+
+  if (tier >= requiredTier) {
+    return true;
+  }
 
   await auditLog(
     "⚠️ Zamietnutý príkaz",
-    `Používateľ: ${interaction.user.tag} (${interaction.user.id})\nPríkaz: /${interaction.commandName}\nTier: ${tier} / požadovaný ${requiredTier}`,
+    `Používateľ: ${interaction.user.tag} (${interaction.user.id})\n` +
+    `Príkaz: /${interaction.commandName}\n` +
+    `Tier: ${tier} / požadovaný ${requiredTier}`,
     0xED4245
   );
 
   const reply = {
-    content: `❌ Potrebuješ SGooBot Tier ${requiredTier}${requiredTier === 4 ? " (iba owner)" : ""}. Tvoj tier: ${tier}.`,
+    content:
+      `❌ Potrebuješ SGooBot Tier ${requiredTier}` +
+      `${requiredTier === 4 ? " (iba owner)" : ""}. ` +
+      `Tvoj tier: ${tier}.`,
     ephemeral: true
   };
 
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp(reply).catch(() => {});
+  if (
+    interaction.replied ||
+    interaction.deferred
+  ) {
+    await interaction.followUp(reply)
+      .catch(() => {});
   } else {
-    await interaction.reply(reply).catch(() => {});
+    await interaction.reply(reply)
+      .catch(() => {});
   }
 
   return false;
@@ -174,11 +260,14 @@ function authorized(req, res) {
       process.env.WEBHOOK_SECRET
     )
   ) {
-    console.warn(`Unauthorized API request | ${req.method} ${req.path}`);
+    console.warn(
+      `Unauthorized API request | ${req.method} ${req.path}`
+    );
 
     void auditLog(
       "⚠️ Neoprávnená API požiadavka",
-      `Metóda: ${req.method}\nEndpoint: ${req.path}`,
+      `Metóda: ${req.method}\n` +
+      `Endpoint: ${req.path}`,
       0xED4245
     );
 
@@ -198,7 +287,10 @@ function authorized(req, res) {
 
 const OWNER_ID = process.env.BOT_OWNER_ID;
 
-async function getUser(discordId, username = "Unknown") {
+async function getUser(
+  discordId,
+  username = "Unknown"
+) {
   const { data, error } = await supabase
     .from("users")
     .select("*")
@@ -206,7 +298,11 @@ async function getUser(discordId, username = "Unknown") {
     .maybeSingle();
 
   if (error) {
-    console.error("Supabase getUser error:", error);
+    console.error(
+      "Supabase getUser error:",
+      error
+    );
+
     throw new Error("Database error");
   }
 
@@ -262,7 +358,9 @@ async function getUser(discordId, username = "Unknown") {
 }
 
 async function requireEconomyAdmin(interaction) {
-  return (await getAdminTier(interaction.user.id)) >= 1;
+  return (
+    await getAdminTier(interaction.user.id)
+  ) >= 1;
 }
 
 async function logTransaction(
@@ -300,7 +398,10 @@ async function setPoints(
     username
   );
 
-  const oldPoints = Number(user.points || 0);
+  const oldPoints = Number(
+    user.points || 0
+  );
+
   const safePoints = Math.max(
     0,
     Math.floor(Number(newPoints))
@@ -322,6 +423,7 @@ async function setPoints(
       "Supabase setPoints error:",
       error
     );
+
     throw new Error("Database error");
   }
 
@@ -347,11 +449,17 @@ async function changePoints(
     username
   );
 
-  const oldPoints = Number(user.points || 0);
-  const newPoints = oldPoints + Number(amount);
+  const oldPoints = Number(
+    user.points || 0
+  );
+
+  const newPoints =
+    oldPoints + Number(amount);
 
   if (newPoints < 0) {
-    throw new Error("INSUFFICIENT_POINTS");
+    throw new Error(
+      "INSUFFICIENT_POINTS"
+    );
   }
 
   return setPoints(
@@ -364,7 +472,9 @@ async function changePoints(
 }
 
 function formatPoints(points) {
-  return Number(points || 0).toLocaleString("sk-SK");
+  return Number(
+    points || 0
+  ).toLocaleString("sk-SK");
 }
 
 function randomInt(min, max) {
@@ -384,7 +494,8 @@ async function ensureNotBlacklisted(
   if (user.blacklisted) {
     await interaction.reply({
       content:
-        "🚫 **Tvoj účet je blacklistovaný.** Nemôžeš používať economy príkazy.",
+        "🚫 **Tvoj účet je blacklistovaný.** " +
+        "Nemôžeš používať economy príkazy.",
       ephemeral: true
     });
 
@@ -927,6 +1038,14 @@ const customTestCommand = new SlashCommandBuilder()
   .setDescription("OWNER ONLY: Test Custom 5v5 bez 10 hráčov");
 
 // =========================================================
+// KOLO - SLASH COMMAND
+// =========================================================
+
+const koloCommand = new SlashCommandBuilder()
+  .setName("kolo")
+  .setDescription("Spustí kolo s piatimi skrytými odpoveďami");
+
+// =========================================================
 // REGISTER SLASH COMMANDS
 // =========================================================
 
@@ -954,7 +1073,8 @@ const commands = [
   addAdminCommand,
   removeAdminCommand,
   customTestCommand,
-  customCommand
+  customCommand,
+  koloCommand
 ];
 
 async function registerCommands() {
@@ -992,7 +1112,6 @@ async function registerCommands() {
 // =========================================================
 // PM ROLE
 // =========================================================
-
 
 async function handlePmRole(interaction) {
   const role = interaction.options.getRole("role", true);
@@ -1518,10 +1637,6 @@ async function handleUnblacklist(interaction) {
   );
 }
 
-// =========================================================
-// OWNER: ADD ADMIN
-// =========================================================
-
 async function handleAddAdmin(interaction) {
   if (interaction.user.id !== OWNER_ID) {
     return interaction.reply({
@@ -2027,6 +2142,10 @@ async function handleRoleInfo(interaction) {
   });
 }
 
+// =========================================================
+// ADMIN: USER INFO
+// =========================================================
+
 async function handleUserInfo(interaction) {
   const user = interaction.options.getUser("user", true);
   const guild = interaction.guild;
@@ -2051,8 +2170,7 @@ async function handleUserInfo(interaction) {
     ? roles.join(", ").slice(0, 1000)
     : "Žiadne";
 
-  const status = member.presence?.status ||
-    "neznámy";
+  const status = member.presence?.status || "neznámy";
 
   const embed = new EmbedBuilder()
     .setTitle(`Informácie o používateľovi: ${user.tag}`)
@@ -2171,7 +2289,7 @@ async function handleCommands(interaction) {
     "🤖 **SGooBot – Príkazy**",
     `Tvoj tier: **${tier === 4 ? "Owner" : tier}**`,
     "",
-    "**Pre všetkých:** /commands, /balance, /flip, /daily, /leaderboard, /custom create"
+    "**Pre všetkých:** /commands, /balance, /flip, /daily, /leaderboard, /custom create, /kolo"
   ];
 
   if (tier >= 1) {
@@ -2302,15 +2420,17 @@ function customRows(g) {
         .setEmoji("🔀")
     );
   }
-if (g.status === "playing") {
-  row.addComponents(
-    new ButtonBuilder()
-      .setCustomId(`cg:winner:${g.id}`)
-      .setLabel("Víťaz")
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("🏆")
-  );
-}
+
+  if (g.status === "playing") {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`cg:winner:${g.id}`)
+        .setLabel("Víťaz")
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("🏆")
+    );
+  }
+
   row.addComponents(
     new ButtonBuilder()
       .setCustomId(`cg:swap:${g.id}`)
@@ -2343,7 +2463,6 @@ async function customAuthorized(interaction, game) {
 
   return tier >= 2;
 }
-
 
 async function handleCustomCreate(interaction) {
   await interaction.deferReply({ ephemeral: true });
@@ -2525,30 +2644,18 @@ async function handleCustomCreate(interaction) {
 async function customStart(interaction, game) {
   const guild = interaction.guild;
 
-  const waiting = await guild.channels.fetch(
-    game.waitingId
-  );
+  const waiting = await guild.channels.fetch(game.waitingId);
+  const category = await guild.channels.fetch(game.categoryId);
 
-  const category = await guild.channels.fetch(
-    game.categoryId
-  );
-
-  if (
-    !waiting ||
-    category?.type !== ChannelType.GuildCategory
-  ) {
-    throw Error(
-      "Čakacia roomka alebo kategória už neexistuje."
-    );
+  if (!waiting || category?.type !== ChannelType.GuildCategory) {
+    throw Error("Čakacia roomka alebo kategória už neexistuje.");
   }
 
   for (const id of [...game.blue, ...game.red]) {
     const member = await guild.members.fetch(id);
 
     if (member.voice.channelId !== game.waitingId) {
-      throw Error(
-        `Hráč <@${id}> nie je v čakacej roomke.`
-      );
+      throw Error(`Hráč <@${id}> nie je v čakacej roomke.`);
     }
   }
 
@@ -2569,12 +2676,8 @@ async function customStart(interaction, game) {
       parent: category.id,
       userLimit: 5
     });
-
   } catch (error) {
-    if (blue) {
-      await blue.delete().catch(() => {});
-    }
-
+    if (blue) await blue.delete().catch(() => {});
     throw error;
   }
 
@@ -2612,19 +2715,13 @@ async function customStart(interaction, game) {
     : "✅ Hra spustená, všetci hráči presunutí.";
 }
 
-async function customSwap(
-  interaction,
-  game,
-  blueId,
-  redId
-) {
-  if (
-    !game.blue.includes(blueId) ||
-    !game.red.includes(redId)
-  ) {
-    throw Error(
-      "Výber hráčov už nie je aktuálny."
-    );
+// =========================================================
+// CUSTOM - SWAP PLAYERS
+// =========================================================
+
+async function customSwap(interaction, game, blueId, redId) {
+  if (!game.blue.includes(blueId) || !game.red.includes(redId)) {
+    throw Error("Výber hráčov už nie je aktuálny.");
   }
 
   if (game.status === "playing") {
@@ -2642,22 +2739,12 @@ async function customSwap(
       );
     }
 
-    const waiting = await guild.channels.fetch(
-      game.waitingId
-    );
-
-    const blue = await guild.channels.fetch(
-      game.blueChannel
-    );
-
-    const red = await guild.channels.fetch(
-      game.redChannel
-    );
+    const waiting = await guild.channels.fetch(game.waitingId);
+    const blue = await guild.channels.fetch(game.blueChannel);
+    const red = await guild.channels.fetch(game.redChannel);
 
     if (!waiting || !blue || !red) {
-      throw Error(
-        "Niektorá roomka už neexistuje."
-      );
+      throw Error("Niektorá roomka už neexistuje.");
     }
 
     await a.voice.setChannel(waiting);
@@ -2665,7 +2752,6 @@ async function customSwap(
     try {
       await b.voice.setChannel(blue);
       await a.voice.setChannel(red);
-
     } catch {
       await b.voice.setChannel(red).catch(() => {});
       await a.voice.setChannel(blue).catch(() => {});
@@ -2689,15 +2775,15 @@ async function customSwap(
   return "✅ Hráči boli vymenení.";
 }
 
+// =========================================================
+// CUSTOM - END GAME
+// =========================================================
 
 async function customEnd(interaction, game) {
   const problems = [];
   const remainingChannels = [];
 
-  for (const id of [
-    game.blueChannel,
-    game.redChannel
-  ]) {
+  for (const id of [game.blueChannel, game.redChannel]) {
     if (!id) continue;
 
     const channel = await interaction.guild.channels
@@ -2726,7 +2812,6 @@ async function customEnd(interaction, game) {
           "Nepodarilo sa vymazať custom roomku:",
           error
         );
-
         remainingChannels.push(id);
       }
     } else if (fresh) {
@@ -2734,18 +2819,18 @@ async function customEnd(interaction, game) {
     }
   }
 
-game.status = "ended";
+  game.status = "ended";
 
-try {
-  await customRefresh(game);
-} catch (error) {
-  console.error("Nepodarilo sa aktualizovať embed:", error);
-  console.warn("Výsledný embed sa nepodarilo uložiť.");
-} finally {
-  customGames.delete(
-  customGameKey(game.guildId, game.id)
-);
-}
+  try {
+    await customRefresh(game);
+  } catch (error) {
+    console.error("Nepodarilo sa aktualizovať embed:", error);
+    console.warn("Výsledný embed sa nepodarilo uložiť.");
+  } finally {
+    customGames.delete(
+      customGameKey(game.guildId, game.id)
+    );
+  }
 
   await auditLog(
     "Custom 5v5 ukončená",
@@ -2766,6 +2851,10 @@ try {
   return "✅ Hra ukončená a roomky upratané.";
 }
 
+// =========================================================
+// CUSTOM - BUTTON AND SELECT MENU HANDLER
+// =========================================================
+
 async function handleCustomComponent(interaction) {
   const [
     prefix,
@@ -2774,9 +2863,9 @@ async function handleCustomComponent(interaction) {
     selectedBlue
   ] = interaction.customId.split(":");
 
- const game = customGames.get(
-  customGameKey(interaction.guildId, id)
-);
+  const game = customGames.get(
+    customGameKey(interaction.guildId, id)
+  );
 
   if (!game || game.id !== id) {
     return interaction.reply({
@@ -2788,49 +2877,50 @@ async function handleCustomComponent(interaction) {
 
   if (!(await customAuthorized(interaction, game))) {
     return interaction.reply({
-      content:
-        "❌ Nemáš oprávnenie to používať.",
+      content: "❌ Nemáš oprávnenie to používať.",
       ephemeral: true
     });
   }
-if (action === "winner") {
-  if (game.status !== "playing") {
+
+  if (action === "winner") {
+    if (game.status !== "playing") {
+      return interaction.reply({
+        content: "❌ Víťaza možno vybrať iba počas hry.",
+        ephemeral: true
+      });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`cg:winblue:${game.id}`)
+        .setLabel("Blue Team")
+        .setEmoji("🔵")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId(`cg:winred:${game.id}`)
+        .setLabel("Red Team")
+        .setEmoji("🔴")
+        .setStyle(ButtonStyle.Danger)
+    );
+
     return interaction.reply({
-      content: "❌ Víťaza možno vybrať iba počas hry.",
+      content: "🏆 Ktorý tím vyhral Custom Game?",
+      components: [row],
       ephemeral: true
     });
   }
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`cg:winblue:${game.id}`)
-      .setLabel("Blue Team")
-      .setEmoji("🔵")
-      .setStyle(ButtonStyle.Primary),
+  if (action === "swap") {
+    if (game.blue.length === 0 || game.red.length === 0) {
+      return interaction.reply({
+        content:
+          "❌ Na výmenu potrebuješ aspoň jedného hráča v každom tíme.",
+        ephemeral: true
+      });
+    }
 
-    new ButtonBuilder()
-      .setCustomId(`cg:winred:${game.id}`)
-      .setLabel("Red Team")
-      .setEmoji("🔴")
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  return interaction.reply({
-    content: "🏆 Ktorý tím vyhral Custom Game?",
-    components: [row],
-    ephemeral: true
-  });
-}
- if (action === "swap") {
-
-  if (game.blue.length === 0 || game.red.length === 0) {
-    return interaction.reply({
-      content: "❌ Na výmenu potrebuješ aspoň jedného hráča v každom tíme.",
-      ephemeral: true
-    });
-  }
-
-  const menu = new StringSelectMenuBuilder()
+    const menu = new StringSelectMenuBuilder()
       .setCustomId(`cg:blue:${id}`)
       .setPlaceholder("Vyber hráča z Blue Teamu")
       .addOptions(
@@ -2855,8 +2945,7 @@ if (action === "winner") {
 
     if (!game.blue.includes(blueId)) {
       return interaction.update({
-        content:
-          "❌ Hráč už nie je v Blue Teame.",
+        content: "❌ Hráč už nie je v Blue Teame.",
         components: []
       });
     }
@@ -2884,114 +2973,438 @@ if (action === "winner") {
     });
   }
 
-  await interaction.deferUpdate();
-  
-  const busyKey = customGameKey(interaction.guildId, game.id);
-  if (customBusy.has(busyKey)) {
-    return interaction.followUp({
-      content: "⏳ Práve prebieha iná akcia.",
+  // =========================================================
+  // CUSTOM - RED PLAYER SELECT
+  // =========================================================
+
+  if (action === "red") {
+    const redId = interaction.values[0];
+    const blueId = selectedBlue;
+
+    if (!game.blue.includes(blueId) || !game.red.includes(redId)) {
+      return interaction.update({
+        content: "❌ Výber hráčov už nie je aktuálny.",
+        components: []
+      });
+    }
+
+    const key = customGameKey(game.guildId, game.id);
+
+    if (customBusy.has(key)) {
+      return interaction.update({
+        content: "⏳ S touto hrou sa práve pracuje.",
+        components: []
+      });
+    }
+
+    customBusy.add(key);
+
+    try {
+      await interaction.deferUpdate();
+
+      const result = await customSwap(
+        interaction,
+        game,
+        blueId,
+        redId
+      );
+
+      await interaction.editReply({
+        content: result,
+        components: []
+      });
+
+    } catch (error) {
+      console.error("Custom swap error:", error);
+
+      if (interaction.deferred) {
+        await interaction.editReply({
+          content: `❌ ${error.message}`,
+          components: []
+        });
+      } else {
+        await interaction.update({
+          content: `❌ ${error.message}`,
+          components: []
+        });
+      }
+
+    } finally {
+      customBusy.delete(key);
+    }
+
+    return;
+  }
+
+  // =========================================================
+  // CUSTOM - LOCK GAME ACTION
+  // =========================================================
+
+  const key = customGameKey(game.guildId, game.id);
+
+  if (customBusy.has(key)) {
+    return interaction.reply({
+      content: "⏳ S touto hrou sa práve pracuje.",
       ephemeral: true
     });
   }
 
-  customBusy.add(busyKey);
+  customBusy.add(key);
 
   try {
-    let result;
+    await interaction.deferReply({ ephemeral: true });
 
-    if (action === "shuffle") {
+    // =====================================================
+    // START
+    // =====================================================
+
+    if (action === "start") {
       if (game.status !== "waiting") {
-        throw Error(
-          "Zamiešať možno iba pred spustením."
+        return interaction.editReply(
+          "❌ Táto hra už bola spustená."
         );
       }
 
-      const ids = customMix([
+      const result = await customStart(
+        interaction,
+        game
+      );
+
+      return interaction.editReply(result);
+    }
+
+    // =====================================================
+    // SHUFFLE
+    // =====================================================
+
+    if (action === "shuffle") {
+      if (game.status !== "waiting") {
+        return interaction.editReply(
+          "❌ Tímy možno zamiešať iba pred spustením hry."
+        );
+      }
+
+      const players = customMix([
         ...game.blue,
         ...game.red
       ]);
 
-      const half = Math.ceil(ids.length / 2);
+      const half = Math.ceil(players.length / 2);
 
-        game.blue = ids.slice(0, half);
-        game.red = ids.slice(half);
+      game.blue = players.slice(0, half);
+      game.red = players.slice(half);
+
       await customRefresh(game);
 
-      result = "🔀 Tímy zamiešané.";
+      return interaction.editReply(
+        "🔀 Tímy boli náhodne zamiešané."
+      );
+    }
 
-    } else if (action === "start") {
-      if (game.status !== "waiting") {
-        throw Error(
-          "Hra už bola spustená."
+    // =====================================================
+    // BLUE WIN
+    // =====================================================
+
+    if (action === "winblue") {
+      if (game.status !== "playing") {
+        return interaction.editReply(
+          "❌ Hra už nie je aktívna."
         );
       }
 
-      result = await customStart(
-        interaction,
-        game
+      game.winner = "blue";
+
+      await customRefresh(game);
+
+      await auditLog(
+        "Custom 5v5 - víťaz",
+        `Game: ${game.id}\nVíťaz: Blue Team\nAdmin: ${interaction.user.id}`
       );
 
-    } else if (action === "red") {
-      result = await customSwap(
-        interaction,
-        game,
-        selectedBlue,
-        interaction.values[0]
+      return interaction.editReply(
+        "🏆 Víťazom bol označený **Blue Team**."
       );
-
-} else if (
-  action === "winblue" ||
-  action === "winred"
-) {
-  if (game.status !== "playing") {
-    throw new Error("Hra už nie je aktívna.");
-  }
-
-  const winner = action === "winblue" ? "blue" : "red";
-
-  game.winner = winner;
-
-  result = await customEnd(interaction, game);
-
-  result =
-    `🏆 ${
-      winner === "blue"
-        ? "BLUE TEAM"
-        : "RED TEAM"
-    } WINS!\n${result}`;
-
-      
-    } else if (action === "end") {
-      result = await customEnd(
-        interaction,
-        game
-      );
-
-    } else {
-      throw Error("Neznáma akcia.");
     }
 
-    return interaction.followUp({
-      content: result,
-      ephemeral: true,
-      allowedMentions: {
-        parse: []
+    // =====================================================
+    // RED WIN
+    // =====================================================
+
+    if (action === "winred") {
+      if (game.status !== "playing") {
+        return interaction.editReply(
+          "❌ Hra už nie je aktívna."
+        );
       }
-    });
+
+      game.winner = "red";
+
+      await customRefresh(game);
+
+      await auditLog(
+        "Custom 5v5 - víťaz",
+        `Game: ${game.id}\nVíťaz: Red Team\nAdmin: ${interaction.user.id}`
+      );
+
+      return interaction.editReply(
+        "🏆 Víťazom bol označený **Red Team**."
+      );
+    }
+
+    // =====================================================
+    // END GAME
+    // =====================================================
+
+    if (action === "end") {
+      if (game.status === "ended") {
+        return interaction.editReply(
+          "❌ Hra už bola ukončená."
+        );
+      }
+
+      const result = await customEnd(
+        interaction,
+        game
+      );
+
+      return interaction.editReply(result);
+    }
+
+    return interaction.editReply(
+      "❌ Neznáma Custom Game akcia."
+    );
 
   } catch (error) {
-    console.error("Custom 5v5:", error);
+    console.error(
+      "Custom component error:",
+      error
+    );
 
-    return interaction.followUp({
-      content: `❌ ${error.message}`,
-      ephemeral: true,
+    const message =
+      `❌ Nastala chyba: ${error.message}`;
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(message)
+        .catch(() => {});
+    } else {
+      await interaction.reply({
+        content: message,
+        ephemeral: true
+      }).catch(() => {});
+    }
+
+  } finally {
+    customBusy.delete(key);
+  }
+}
+
+// =========================================================
+// KOLO - CONFIGURATION
+// =========================================================
+
+// Tu sú odpovede, ktoré budú náhodne premiešané.
+// Každé spustenie /kolo vytvorí nové rozloženie.
+
+const koloOdpovede = [
+  "🎁 Získavaš odmenu!",
+  "🍀 Máš šťastie!",
+  "😂 Smolný výber!",
+  "⭐ Získavaš bonus!",
+  "🔥 Špeciálna výzva!"
+];
+
+// Každé kolo má vlastný záznam podľa ID správy.
+const koloHry = new Map();
+
+// =========================================================
+// KOLO - SHUFFLE
+// =========================================================
+
+function koloShuffle(answers) {
+  const shuffled = [...answers];
+
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+
+    [shuffled[i], shuffled[j]] = [
+      shuffled[j],
+      shuffled[i]
+    ];
+  }
+
+  return shuffled;
+}
+
+// =========================================================
+// KOLO - BUTTONS
+// =========================================================
+
+function koloButtons(selected = null) {
+  const row = new ActionRowBuilder();
+
+  for (let number = 1; number <= 5; number++) {
+    const button = new ButtonBuilder()
+      .setCustomId(`kolo:${number}`)
+      .setLabel(String(number));
+
+    if (selected === null) {
+      button.setStyle(ButtonStyle.Primary);
+    } else {
+      button
+        .setStyle(
+          number === selected
+            ? ButtonStyle.Success
+            : ButtonStyle.Secondary
+        )
+        .setDisabled(true);
+    }
+
+    row.addComponents(button);
+  }
+
+  return [row];
+}
+
+// =========================================================
+// KOLO - CREATE
+// =========================================================
+
+async function handleKolo(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({
+      content: "❌ /kolo funguje iba na Discord serveri.",
+      ephemeral: true
+    });
+  }
+
+  await interaction.deferReply();
+
+  const answers = koloShuffle(koloOdpovede);
+
+  const embed = new EmbedBuilder()
+    .setTitle("🎲 SGooBot | KOLO")
+    .setDescription(
+      "🎯 **Vyber si jedno z piatich čísel!**\n\n" +
+      "🔒 Pod každým číslom je skrytá odpoveď.\n" +
+      "🎲 Odpovede sú náhodne premiešané.\n\n" +
+      "⚠️ **Iba jeden výber na celé kolo!**\n" +
+      "Kto klikne prvý, rozhodne."
+    )
+    .setColor(0x5865F2)
+    .setFooter({
+      text: "SGooBot | Interaktívne kolo"
+    })
+    .setTimestamp();
+
+  const message = await interaction.editReply({
+    embeds: [embed],
+    components: koloButtons(),
+    allowedMentions: {
+      parse: []
+    }
+  });
+
+  koloHry.set(message.id, {
+    answers,
+    selected: null,
+    createdBy: interaction.user.id,
+    createdAt: Date.now()
+  });
+
+  console.log(
+    `[KOLO] Vytvorené: ${message.id}`
+  );
+}
+
+// =========================================================
+// KOLO - BUTTON CLICK
+// =========================================================
+
+async function handleKoloButton(interaction) {
+  const game = koloHry.get(interaction.message.id);
+
+  if (!game) {
+    return interaction.reply({
+      content:
+        "❌ Toto kolo už bolo ukončené alebo bot bol reštartovaný.",
+      ephemeral: true
+    });
+  }
+
+  const selected = Number(
+    interaction.customId.split(":")[1]
+  );
+
+  if (
+    !Number.isInteger(selected) ||
+    selected < 1 ||
+    selected > 5
+  ) {
+    return interaction.reply({
+      content: "❌ Neplatné číslo.",
+      ephemeral: true
+    });
+  }
+
+  // Zámok nastavíme synchronne.
+  // Prvý klik vyhrá a ostatné sa zamietnu.
+
+  if (game.selected !== null) {
+    return interaction.reply({
+      content:
+        "❌ Toto kolo už má vybrané číslo.",
+      ephemeral: true
+    });
+  }
+
+  game.selected = selected;
+
+  const answer = game.answers[selected - 1];
+
+  await interaction.deferUpdate();
+
+  const embed = new EmbedBuilder()
+    .setTitle("🎲 SGooBot | KOLO UKONČENÉ")
+    .setDescription(
+      `👤 Vybral: <@${interaction.user.id}>\n` +
+      `🔢 Číslo: **${selected}**\n\n` +
+      `🔓 **Skrytá odpoveď:**\n` +
+      `${answer}\n\n` +
+      "🔒 Všetky možnosti sú uzamknuté."
+    )
+    .setColor(0x57F287)
+    .setFooter({
+      text: "SGooBot | Kolo dokončené"
+    })
+    .setTimestamp();
+
+  try {
+    await interaction.message.edit({
+      embeds: [embed],
+      components: koloButtons(selected),
       allowedMentions: {
         parse: []
       }
     });
 
-  } finally {
-    customBusy.delete(busyKey);
+    koloHry.delete(interaction.message.id);
+
+    await auditLog(
+      "SGooBot Kolo",
+      `Používateľ: ${interaction.user.id}\n` +
+      `Číslo: ${selected}\n` +
+      `Odpoveď: ${answer}`,
+      0x57F287
+    ).catch(console.error);
+
+  } catch (error) {
+    console.error("Kolo button error:", error);
+
+    // Ak sa aktualizácia správy nepodarí,
+    // necháme hru zamknutú, aby nebolo možné
+    // vybrať druhú odpoveď.
+
+    throw error;
   }
 }
 
@@ -3000,197 +3413,204 @@ if (action === "winner") {
 // =========================================================
 
 client.on("interactionCreate", async interaction => {
-  if (
-    (
-      interaction.isButton() ||
-      interaction.isStringSelectMenu()
-    ) &&
-    interaction.customId.startsWith("cg:")
-  ) {
-    try {
-      await handleCustomComponent(interaction);
-
-    } catch (error) {
-      console.error("Custom component:", error);
-
-      const msg = {
-        content: "❌ Chyba custom hry.",
-        ephemeral: true
-      };
-
-      if (
-        interaction.deferred ||
-        interaction.replied
-      ) {
-        await interaction.followUp(msg).catch(() => {});
-      } else {
-        await interaction.reply(msg).catch(() => {});
-      }
-    }
-
-    return;
-  }
-
-  if (!interaction.isChatInputCommand()) {
-    return;
-  }
-
-  const commandHandlers = {
-    custom: handleCustomCreate,
-    commands: handleCommands,
-    "pm-role": handlePmRole,
-    balance: handleBalance,
-    flip: handleFlip,
-    daily: handleDaily,
-    leaderboard: handleLeaderboard,
-    addpoints: handleAddPoints,
-    removepoints: handleRemovePoints,
-    setpoints: handleSetPoints,
-    resetpoints: handleResetPoints,
-    blacklist: handleBlacklist,
-    unblacklist: handleUnblacklist,
-    addadmin: handleAddAdmin,
-    removeadmin: handleRemoveAdmin,
-    addrole: handleAddRole,
-    removerole: handleRemoveRole,
-    move: handleMove,
-    clear: handleClear,
-    slowmode: handleSlowmode,
-    roleinfo: handleRoleInfo,
-    userinfo: handleUserInfo,
-    customtest: handleCustomCreate,
-    announce: handleAnnounce
-  };
-
-  const handler = commandHandlers[
-    interaction.commandName
-  ];
-
-  if (!handler) return;
-
   try {
-    const requiredTier =
-      COMMAND_TIERS[interaction.commandName] || 0;
+    // =====================================================
+    // KOLO BUTTONS
+    // =====================================================
 
     if (
-      requiredTier &&
-      !(await requireTier(
-        interaction,
-        requiredTier
-      ))
+      interaction.isButton() &&
+      interaction.customId.startsWith("kolo:")
     ) {
+      return await handleKoloButton(interaction);
+    }
+
+    // =====================================================
+    // CUSTOM GAME BUTTONS AND MENUS
+    // =====================================================
+
+    if (
+      (interaction.isButton() ||
+        interaction.isStringSelectMenu()) &&
+      interaction.customId.startsWith("cg:")
+    ) {
+      return await handleCustomComponent(interaction);
+    }
+
+    // =====================================================
+    // SLASH COMMANDS
+    // =====================================================
+
+    if (!interaction.isChatInputCommand()) {
       return;
     }
 
-  } catch (error) {
-    console.error(
-      "Tier lookup failed:",
-      error
-    );
+    const command = interaction.commandName;
 
-    await interaction.reply({
-      content:
-        "❌ Nepodarilo sa overiť oprávnenia. Skontroluj Supabase.",
-      ephemeral: true
-    }).catch(() => {});
+    // =====================================================
+    // PERMISSION CHECK
+    // =====================================================
 
-    return;
-  }
+    const requiredTier = COMMAND_TIERS[command];
 
-  await auditLog(
-    "Príkaz použitý",
-    `Používateľ: ${interaction.user.tag} (${interaction.user.id})\n` +
-    `Príkaz: /${interaction.commandName}\n` +
-    `Server: ${interaction.guild?.name || "DM"}\n` +
-    `Kanál: ${interaction.channel?.name || "neznámy"}`,
-    0x5865F2
-  );
+    if (requiredTier) {
+      const allowed = await requireTier(
+        interaction,
+        requiredTier
+      );
 
-  try {
+      if (!allowed) return;
+    }
+
+    // =====================================================
+    // CUSTOM GAMES
+    // =====================================================
+
+    if (command === "custom") {
+      const subcommand =
+        interaction.options.getSubcommand();
+
+      if (subcommand === "create") {
+        return await handleCustomCreate(interaction);
+      }
+
+      return interaction.reply({
+        content: "❌ Neznámy Custom príkaz.",
+        ephemeral: true
+      });
+    }
+
+    if (command === "customtest") {
+      return await handleCustomCreate(interaction);
+    }
+
+    // =====================================================
+    // COMMAND ROUTER
+    // =====================================================
+
+    const commandHandlers = {
+      commands: handleCommands,
+
+      addrole: handleAddRole,
+      removerole: handleRemoveRole,
+      move: handleMove,
+      clear: handleClear,
+      slowmode: handleSlowmode,
+      roleinfo: handleRoleInfo,
+      userinfo: handleUserInfo,
+      announce: handleAnnounce,
+      "pm-role": handlePmRole,
+
+      balance: handleBalance,
+      flip: handleFlip,
+      daily: handleDaily,
+      leaderboard: handleLeaderboard,
+
+      addpoints: handleAddPoints,
+      removepoints: handleRemovePoints,
+      setpoints: handleSetPoints,
+      resetpoints: handleResetPoints,
+
+      blacklist: handleBlacklist,
+      unblacklist: handleUnblacklist,
+
+      addadmin: handleAddAdmin,
+      removeadmin: handleRemoveAdmin,
+
+      kolo: handleKolo
+    };
+
+    const handler = commandHandlers[command];
+
+    if (!handler) {
+      return interaction.reply({
+        content: "❌ Neznámy príkaz.",
+        ephemeral: true
+      });
+    }
+
     await handler(interaction);
 
-    await auditLog(
-      "Handler príkazu dokončený",
-      `Používateľ: ${interaction.user.tag}\n` +
-      `Príkaz: /${interaction.commandName}`,
-      0x57F287
-    );
-
   } catch (error) {
     console.error(
-      `Command ${interaction.commandName} failed:`,
+      "Interaction handler error:",
       error
     );
 
-    await auditLog(
-      "❌ Chyba príkazu",
-      `Používateľ: ${interaction.user.tag}\n` +
-      `Príkaz: /${interaction.commandName}\n` +
-      `Chyba: ${error?.message || "neznáma chyba"}`,
-      0xED4245
-    );
+    const reply = {
+      content:
+        "❌ Pri vykonávaní príkazu nastala chyba.",
+      ephemeral: true
+    };
 
-    const message =
-      "❌ Pri vykonávaní príkazu nastala chyba.";
-
-    if (
-      interaction.replied ||
-      interaction.deferred
-    ) {
-      await interaction.editReply({
-        content: message
-      }).catch(() => {});
-
-    } else {
-      await interaction.reply({
-        content: message,
-        ephemeral: true
-      }).catch(() => {});
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp(reply);
+      } else {
+        await interaction.reply(reply);
+      }
+    } catch (replyError) {
+      console.error(
+        "Interaction error reply failed:",
+        replyError
+      );
     }
   }
 });
 
-// =========================================================
-// BOT READY
-// =========================================================
+ // =========================================================
+ // DISCORD READY
+ // =========================================================
 
-client.once(
-  "clientReady",
-  async readyClient => {
-    console.log(
-      `Logged in as ${readyClient.user.tag}`
-    );
+ client.once("clientReady", async () => {
+   console.log("=================================");
+   console.log("SGooBot je ONLINE");
+   console.log(`Prihlásený ako: ${client.user.tag}`);
+   console.log("=================================");
 
-    readyClient.user.setActivity(
-      "twitch.tv/sgooob",
-      {
-        type: ActivityType.Streaming,
-        url: "https://www.twitch.tv/sgooob"
-      }
-    );
+   try {
+     client.user.setActivity(
+       "twitch.tv/sgooob",
+       {
+         type: ActivityType.Streaming,
+         url: "https://www.twitch.tv/sgooob"
+       }
+     );
 
-    await registerCommands();
-  }
-);
+     console.log("Streaming status nastavený.");
+   } catch (error) {
+     console.error("Presence error:", error);
+   }
 
-// =========================================================
-// LOGIN
-// =========================================================
+   await registerCommands();
+ });
 
-client.login(
-  process.env.DISCORD_TOKEN
-);
+ // =========================================================
+ // EXPRESS SERVER
+ // =========================================================
 
-// =========================================================
-// HTTP SERVER
-// =========================================================
+ app.listen(port, "0.0.0.0", () => {
+   console.log(`HTTP server beží na porte ${port}`);
+ });
 
-app.listen(
-  port,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `HTTP server listening on port ${port}`
-    );
-  }
-);
+ // =========================================================
+ // DISCORD LOGIN
+ // =========================================================
+
+ client.login(process.env.DISCORD_TOKEN)
+   .catch(error => {
+     console.error("Discord login failed:", error);
+     process.exitCode = 1;
+   });
+
+ // =========================================================
+ // GLOBAL ERROR HANDLING
+ // =========================================================
+
+ process.on("unhandledRejection", error => {
+   console.error("Unhandled rejection:", error);
+ });
+
+ process.on("uncaughtException", error => {
+   console.error("Uncaught exception:", error);
+ });
