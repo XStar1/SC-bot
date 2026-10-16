@@ -3206,11 +3206,11 @@ async function handleCustomComponent(interaction) {
 // Každé spustenie /kolo vytvorí nové rozloženie.
 
 const koloOdpovede = [
-  "🎁 Získavaš odmenu!",
-  "🍀 Máš šťastie!",
-  "😂 Smolný výber!",
-  "⭐ Získavaš bonus!",
-  "🔥 Špeciálna výzva!"
+  "💎 VIP na 7 dní!",
+  "🍀 Další zatočení!",
+  "😂 Vlastní herní výzva!",
+  "⭐ Digitální odměna do 4 euro!",
+  "🔥 VIP na týden + herní výzva!"
 ];
 
 // Každé kolo má vlastný záznam podľa ID správy.
