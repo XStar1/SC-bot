@@ -3286,7 +3286,7 @@ async function handleKolo(interaction) {
     .setDescription(
       "🎯 **Vyber si jedno z piatich čísel!**\n\n" +
       "🔒 Pod každým číslom je skrytá odpoveď.\n" +
-      "🎲 Odpovede sú náhodne premiešané.\n\n" +
+      "🎲 Odpovede sú náhodne premiešané.\n\n" 
     )
     .setColor(0x5865F2)
     .setFooter({
