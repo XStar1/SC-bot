@@ -3198,217 +3198,247 @@ async function handleCustomComponent(interaction) {
   }
 }
 
-// =========================================================
-// KOLO - CONFIGURATION
-// =========================================================
 
-// Tu sú odpovede, ktoré budú náhodne premiešané.
-// Každé spustenie /kolo vytvorí nové rozloženie.
+ // =========================================================
+ // KOLO - CONFIGURATION
+ // =========================================================
 
-const koloOdpovede = [
-  "💎 VIP na 7 dní!",
-  "🍀 Další zatočení!",
-  "😂 Vlastní herní výzva!",
-  "⭐ Digitální odměna do 4 euro!",
-  "🔥 VIP na týden + herní výzva!"
-];
+ const koloOdpovede = [
+   "🎁 VIP na 7 dní!",
+   "🍀 Další zatočení!",
+   "😂 Vlastní herní výzva!",
+   "⭐ Digitální odměna do 4 euro!",
+   "🔥 VIP na týden + herní výzva!"
+ ];
 
-// Každé kolo má vlastný záznam podľa ID správy.
-const koloHry = new Map();
+ // Zabraňuje dvom súčasným kliknutiam na to isté kolo.
+ // Nie je potrebné uchovávať samotné hry v pamäti.
+ const koloBusy = new Set();
 
-// =========================================================
-// KOLO - SHUFFLE
-// =========================================================
+ // =========================================================
+ // KOLO - SHUFFLE
+ // =========================================================
 
-function koloShuffle(answers) {
-  const shuffled = [...answers];
+ function koloShuffle() {
+   const order = [0, 1, 2, 3, 4];
 
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(i + 1);
+   for (let i = order.length - 1; i > 0; i--) {
+     const j = crypto.randomInt(i + 1);
 
-    [shuffled[i], shuffled[j]] = [
-      shuffled[j],
-      shuffled[i]
-    ];
-  }
+     [order[i], order[j]] = [order[j], order[i]];
+   }
 
-  return shuffled;
-}
+   return order.join("");
+ }
 
-// =========================================================
-// KOLO - BUTTONS
-// =========================================================
+ // =========================================================
+ // KOLO - BUTTONS
+ // =========================================================
 
+ function koloButtons(order, selected = null) {
+   const row = new ActionRowBuilder();
 
-function koloButtons(answers, selected = null) {
-  const row = new ActionRowBuilder();
+   for (let number = 1; number <= 5; number++) {
+     const button = new ButtonBuilder()
+       .setCustomId(`kolo:${order}:${number}`)
+       .setLabel(String(number))
+       .setStyle(
+         selected === null
+           ? ButtonStyle.Primary
+           : number === selected
+             ? ButtonStyle.Success
+             : ButtonStyle.Secondary
+       )
+       .setDisabled(selected !== null);
 
-  for (let number = 1; number <= 5; number++) {
-    const button = new ButtonBuilder()
-      .setCustomId(
-        `kolo:${number}:${answers.join(",")}`
-      )
-      .setLabel(String(number));
+     row.addComponents(button);
+   }
 
-    if (selected === null) {
-      button.setStyle(ButtonStyle.Primary);
-    } else {
-      button
-        .setStyle(
-          number === selected
-            ? ButtonStyle.Success
-            : ButtonStyle.Secondary
-        )
-        .setDisabled(true);
-    }
+   return [row];
+ }
 
-    row.addComponents(button);
-  }
+ // =========================================================
+ // KOLO - CREATE
+ // =========================================================
 
-  return [row];
-}
+ async function handleKolo(interaction) {
+   if (!interaction.guild) {
+     return interaction.reply({
+       content: "❌ /kolo funguje iba na serveri.",
+       ephemeral: true
+     });
+   }
 
+   const order = koloShuffle();
 
-// =========================================================
-// KOLO - CREATE
-// =========================================================
+   const embed = new EmbedBuilder()
+     .setTitle("🎲 SGooBot | KOLO")
+     .setDescription(
+       "🎯 **Vyber si jedno z piatich čísel!**\n\n" +
+       "🔒 Pod každým číslom je skrytá odpoveď.\n" +
+       "🎲 Odpovede sú náhodne premiešané.\n\n"
+     )
+     .setColor(0x5865F2)
+     .setFooter({
+       text: "SGooBot | Interaktívne kolo"
+     })
+     .setTimestamp();
 
-async function handleKolo(interaction) {
-  if (!interaction.guild) {
-    return interaction.reply({
-      content: "❌ /kolo funguje iba na Discord serveri.",
-      ephemeral: true
-    });
-  }
+   await interaction.reply({
+     embeds: [embed],
+     components: koloButtons(order),
+     allowedMentions: {
+       parse: []
+     }
+   });
+ }
 
-  await interaction.deferReply();
+ // =========================================================
+ // KOLO - BUTTON CLICK
+ // =========================================================
 
-  const answers = koloShuffle(koloOdpovede);
+ async function handleKoloButton(interaction) {
+   const parts = interaction.customId.split(":");
 
-  const embed = new EmbedBuilder()
-    .setTitle("🎲 SGooBot | KOLO")
-    .setDescription(
-      "🎯 **Vyber si jedno z piatich čísel!**\n\n" +
-      "🔒 Pod každým číslom je skrytá odpoveď.\n" +
-      "🎲 Odpovede sú náhodne premiešané.\n\n" 
-    )
-    .setColor(0x5865F2)
-    .setFooter({
-      text: "SGooBot | Interaktívne kolo"
-    })
-    .setTimestamp();
+   // Staré tlačidlá z predchádzajúcej verzie
+   // nie sú kompatibilné s novým systémom.
+   if (parts.length !== 3) {
+     return interaction.reply({
+       content:
+         "❌ Toto kolo je zo starej verzie. Vytvor nové /kolo.",
+       ephemeral: true
+     });
+   }
 
-  const message = await interaction.editReply({
-    embeds: [embed],
-    components: koloButtons(),
-    allowedMentions: {
-      parse: []
-    }
-  });
+   const order = parts[1];
+   const selected = Number(parts[2]);
 
-  koloHry.set(message.id, {
-    answers,
-    selected: null,
-    createdBy: interaction.user.id,
-    createdAt: Date.now()
-  });
+   // Kontrola, či tlačidlo obsahuje platné údaje.
+   const validOrder =
+     /^[0-4]{5}$/.test(order) &&
+     new Set(order).size === 5;
 
-  console.log(
-    `[KOLO] Vytvorené: ${message.id}`
-  );
-}
+   if (
+     !validOrder ||
+     !Number.isInteger(selected) ||
+     selected < 1 ||
+     selected > 5
+   ) {
+     return interaction.reply({
+       content: "❌ Neplatné údaje kola.",
+       ephemeral: true
+     });
+   }
 
-// =========================================================
-// KOLO - BUTTON CLICK
-// =========================================================
+   const messageId = interaction.message.id;
 
-async function handleKoloButton(interaction) {
-  const game = koloHry.get(interaction.message.id);
+   // Ak už niekto klikol, druhý výber zamietneme.
+   if (koloBusy.has(messageId)) {
+     return interaction.reply({
+       content: "❌ Niekto už vyberá odpoveď.",
+       ephemeral: true
+     });
+   }
 
-  if (!game) {
-    return interaction.reply({
-      content:
-        "❌ Toto kolo už bolo ukončené alebo bot bol reštartovaný.",
-      ephemeral: true
-    });
-  }
+   koloBusy.add(messageId);
 
-  const selected = Number(
-    interaction.customId.split(":")[1]
-  );
+   try {
+     // Načítame aktuálnu správu z Discordu.
+     // Funguje to aj po reštarte bota.
+     const currentMessage =
+       await interaction.channel.messages.fetch(messageId);
 
-  if (
-    !Number.isInteger(selected) ||
-    selected < 1 ||
-    selected > 5
-  ) {
-    return interaction.reply({
-      content: "❌ Neplatné číslo.",
-      ephemeral: true
-    });
-  }
+     const firstButton =
+       currentMessage.components[0]?.components[0];
 
-  // Zámok nastavíme synchronne.
-  // Prvý klik vyhrá a ostatné sa zamietnu.
+     if (!firstButton) {
+       return interaction.reply({
+         content: "❌ Tlačidlá kola sa nenašli.",
+         ephemeral: true
+       });
+     }
 
-  if (game.selected !== null) {
-    return interaction.reply({
-      content:
-        "❌ Toto kolo už má vybrané číslo.",
-      ephemeral: true
-    });
-  }
+     // Overenie, či už bolo kolo ukončené.
+     if (firstButton.disabled) {
+       return interaction.reply({
+         content: "❌ Toto kolo už bolo ukončené.",
+         ephemeral: true
+       });
+     }
 
-  game.selected = selected;
+     // Overenie, či ide o rovnaké kolo.
+     if (
+       firstButton.customId !==
+       `kolo:${order}:1`
+     ) {
+       return interaction.reply({
+         content: "❌ Údaje kola sa nezhodujú.",
+         ephemeral: true
+       });
+     }
 
-  const answer = game.answers[selected - 1];
+     // Zistíme skrytú odpoveď.
+     const answerIndex = Number(
+       order[selected - 1]
+     );
 
-  await interaction.deferUpdate();
+     const answer = koloOdpovede[answerIndex];
 
-  const embed = new EmbedBuilder()
-    .setTitle("🎲 SGooBot | KOLO UKONČENÉ")
-    .setDescription(
-      `👤 Vybral: <@${interaction.user.id}>\n` +
-      `🔢 Číslo: **${selected}**\n\n` +
-      `🔓 **Skrytá odpoveď:**\n` +
-      `${answer}\n\n` +
-      "🔒 Všetky možnosti sú uzamknuté."
-    )
-    .setColor(0x57F287)
-    .setFooter({
-      text: "SGooBot | Kolo dokončené"
-    })
-    .setTimestamp();
+     const embed = new EmbedBuilder()
+       .setTitle("🎲 SGooBot | KOLO UKONČENÉ")
+       .setDescription(
+         `👤 Vybral: <@${interaction.user.id}>\n` +
+         `🔢 Číslo: **${selected}**\n\n` +
+         `🔓 **Skrytá odpoveď:**\n` +
+         `${answer}\n\n` +
+         "🔒 Všetky možnosti sú uzamknuté."
+       )
+       .setColor(0x57F287)
+       .setFooter({
+         text: "SGooBot | Kolo dokončené"
+       })
+       .setTimestamp();
 
-  try {
-    await interaction.message.edit({
-      embeds: [embed],
-      components: koloButtons(selected),
-      allowedMentions: {
-        parse: []
-      }
-    });
+     // Aktualizácia pôvodnej správy:
+     // zvolené tlačidlo bude zelené,
+     // všetkých päť bude deaktivovaných.
+     await interaction.update({
+       embeds: [embed],
+       components: koloButtons(order, selected),
+       allowedMentions: {
+         parse: []
+       }
+     });
 
-    koloHry.delete(interaction.message.id);
+     await auditLog(
+       "SGooBot Kolo",
+       `Používateľ: ${interaction.user.id}\n` +
+       `Číslo: ${selected}\n` +
+       `Odpoveď: ${answer}`,
+       0x57F287
+     ).catch(console.error);
 
-    await auditLog(
-      "SGooBot Kolo",
-      `Používateľ: ${interaction.user.id}\n` +
-      `Číslo: ${selected}\n` +
-      `Odpoveď: ${answer}`,
-      0x57F287
-    ).catch(console.error);
+   } catch (error) {
+     console.error("KOLO ERROR:", error);
 
-  } catch (error) {
-    console.error("Kolo button error:", error);
+     const reply = {
+       content: "❌ Pri výbere nastala chyba.",
+       ephemeral: true
+     };
 
-    // Ak sa aktualizácia správy nepodarí,
-    // necháme hru zamknutú, aby nebolo možné
-    // vybrať druhú odpoveď.
+     if (interaction.replied || interaction.deferred) {
+       await interaction.followUp(reply)
+         .catch(() => {});
+     } else {
+       await interaction.reply(reply)
+         .catch(() => {});
+     }
 
-    throw error;
-  }
-}
+   } finally {
+     koloBusy.delete(messageId);
+   }
+ }
+
 
 // =========================================================
 // INTERACTION HANDLER
