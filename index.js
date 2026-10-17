@@ -3239,12 +3239,15 @@ function koloShuffle(answers) {
 // KOLO - BUTTONS
 // =========================================================
 
-function koloButtons(selected = null) {
+
+function koloButtons(answers, selected = null) {
   const row = new ActionRowBuilder();
 
   for (let number = 1; number <= 5; number++) {
     const button = new ButtonBuilder()
-      .setCustomId(`kolo:${number}`)
+      .setCustomId(
+        `kolo:${number}:${answers.join(",")}`
+      )
       .setLabel(String(number));
 
     if (selected === null) {
@@ -3264,6 +3267,7 @@ function koloButtons(selected = null) {
 
   return [row];
 }
+
 
 // =========================================================
 // KOLO - CREATE
